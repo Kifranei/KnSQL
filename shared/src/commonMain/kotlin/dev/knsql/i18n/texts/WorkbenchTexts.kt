@@ -1,0 +1,110 @@
+package dev.knsql.i18n.texts
+
+import dev.knsql.i18n.Text
+
+internal val workbenchTexts = listOf<Text>(
+    // WorkbenchPage
+    Text("工作台", "工作台", "Workbench"),
+    Text("断开 {0}", "中斷連線 {0}", "Disconnect {0}"),
+    Text("对象", "物件", "Objects"),
+    Text("结果", "結果", "Results"),
+    Text(
+        "从「连接」打开一个库，这里会列出目录、表和视图。点表名会预览数据，长按表或库可以查看 DDL。",
+        "從「連線」開啟一個資料庫，這裡會列出目錄、資料表和檢視。點選資料表名稱可預覽資料，長按資料表或資料庫可檢視 DDL。",
+        "Open a database from Connections to list its catalogs, tables and views here. Tap a table to preview its data; long-press a table or database to view its DDL.",
+    ),
+    Text("预览数据", "預覽資料", "Preview data"),
+    Text("查看 DDL", "檢視 DDL", "View DDL"),
+    Text("折叠", "收合", "Collapse"),
+    Text("展开", "展開", "Expand"),
+    Text("导出全部 DDL", "匯出全部 DDL", "Export all DDL"),
+    Text("视图", "檢視", "View"),
+    Text("表", "資料表", "Table"),
+    Text("执行脚本", "執行指令碼", "Run script"),
+    Text("当前语句", "目前陳述式", "Current statement"),
+    Text("打开文件", "開啟檔案", "Open file"),
+    Text("保存", "儲存", "Save"),
+    Text("已保存 {0}", "已儲存 {0}", "Saved {0}"),
+    Text("取消", "取消", "Cancel"),
+    Text(
+        "Alt+X 执行整个脚本，Ctrl+Enter 执行光标所在语句。支持 ; 、单独一行的 / 或 GO，以及 DELIMITER。",
+        "Alt+X 執行整個指令碼，Ctrl+Enter 執行游標所在的陳述式。支援 ; 、單獨一行的 / 或 GO，以及 DELIMITER。",
+        "Alt+X runs the whole script, Ctrl+Enter runs the statement at the cursor. Supports ;, / or GO on a line of its own, and DELIMITER.",
+    ),
+    Text("执行结果会显示在这里。", "執行結果會顯示在這裡。", "Results will appear here."),
+    Text("这些语句没有返回结果集。", "這些陳述式沒有傳回結果集。", "These statements returned no result set."),
+    Text("结果 {0}", "結果 {0}", "Result {0}"),
+    Text("影响 {0} 行 · {1} ms", "影響 {0} 列 · {1} ms", "{0} rows affected · {1} ms"),
+    Text("{0} 行已截断 · {1} ms", "{0} 列（已截斷）· {1} ms", "{0} rows (truncated) · {1} ms"),
+    Text("{0} 行 · {1} ms", "{0} 列 · {1} ms", "{0} rows · {1} ms"),
+    Text(
+        "结果太大，剪贴板放不下，请用「导出 CSV」",
+        "結果太大，剪貼簿放不下，請使用「匯出 CSV」",
+        "Result is too large for the clipboard; use “Export CSV” instead",
+    ),
+    Text("已复制 {0} 行，可直接粘贴到表格", "已複製 {0} 列，可直接貼到試算表", "Copied {0} rows, ready to paste into a spreadsheet"),
+    Text("复制结果", "複製結果", "Copy results"),
+    Text(
+        "已导出 {0}（{1} 行，结果被最多行数截断）",
+        "已匯出 {0}（{1} 列，結果已依最多列數截斷）",
+        "Exported {0} ({1} rows, truncated by the row limit)",
+    ),
+    Text("已导出 {0}（{1} 行）", "已匯出 {0}（{1} 列）", "Exported {0} ({1} rows)"),
+    Text("导出 CSV", "匯出 CSV", "Export CSV"),
+    Text("值", "值", "Value"),
+
+    // HistoryPage
+    Text("选择记录", "選擇記錄", "Select records"),
+    Text("已选择 {0} 项", "已選擇 {0} 項", "{0} selected"),
+    Text("退出多选", "結束多選", "Exit multi-select"),
+    Text("取消全选", "取消全選", "Deselect all"),
+    Text("全选", "全選", "Select all"),
+    Text("历史", "歷史", "History"),
+    Text("最近 100 条", "最近 100 筆", "Last 100"),
+    Text("清空历史", "清除全部歷史", "Clear history"),
+    Text(
+        "执行过的语句会出现在这里。点一条可以放回编辑器，长按可以多选删除。",
+        "執行過的陳述式會出現在這裡。點選一筆可放回編輯器，長按可多選刪除。",
+        "Statements you run will appear here. Tap one to put it back in the editor; long-press to select several and delete them.",
+    ),
+    Text("点按勾选，可多选", "點按勾選，可多選", "Tap to select; multiple allowed"),
+    Text("记录 · 长按多选", "記錄 · 長按多選", "History · long-press to multi-select"),
+    Text("删除", "刪除", "Delete"),
+    Text("删除 {0} 项", "刪除 {0} 項", "Delete {0}"),
+    Text("删除记录", "刪除記錄", "Delete records"),
+    Text(
+        "删除全部 {0} 条执行记录。只清理本机历史，不会改动数据库。",
+        "刪除全部 {0} 筆執行記錄。只會清除本機歷史，不會變更資料庫。",
+        "Delete all {0} history records. This only clears local history and does not touch the database.",
+    ),
+    Text(
+        "删除所选的 {0} 条执行记录。只清理本机历史，不会改动数据库。",
+        "刪除所選的 {0} 筆執行記錄。只會清除本機歷史，不會變更資料庫。",
+        "Delete the {0} selected history records. This only clears local history and does not touch the database.",
+    ),
+    Text("清空", "清除全部", "Clear all"),
+    Text("失败：{0}", "失敗：{0}", "Failed: {0}"),
+
+    // DdlPage
+    Text(
+        "内容太大，剪贴板放不下，请用「保存为文件」",
+        "內容太大，剪貼簿放不下，請使用「儲存為檔案」",
+        "Content is too large for the clipboard; use “Save as file” instead",
+    ),
+    Text("返回", "返回", "Back"),
+    Text("已复制 DDL", "已複製 DDL", "DDL copied"),
+    Text("复制全部", "全部複製", "Copy all"),
+    Text("保存为文件", "儲存為檔案", "Save as file"),
+    Text("放入编辑器", "放入編輯器", "Open in editor"),
+    Text(
+        "整库导出会逐个读取对象定义，对象多时需要一些时间。",
+        "整個資料庫匯出會逐一讀取物件定義，物件較多時需要一些時間。",
+        "Exporting a whole database reads each object definition one by one, which can take a while when there are many objects.",
+    ),
+    Text("已复制错误信息", "已複製錯誤訊息", "Error message copied"),
+    Text(
+        "长按可复制错误信息。Oracle 读取其他用户的对象需要 SELECT_CATALOG_ROLE。",
+        "長按可複製錯誤訊息。Oracle 讀取其他使用者的物件需要 SELECT_CATALOG_ROLE。",
+        "Long-press to copy the error message. Oracle requires SELECT_CATALOG_ROLE to read other users' objects.",
+    ),
+)
