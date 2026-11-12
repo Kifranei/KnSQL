@@ -44,7 +44,6 @@ fun SettingsPage(workbench: Workbench, showAbout: Boolean, onShowAbout: (Boolean
     topBar = { barColor ->
     SmallTopAppBar(
         title = tr("设置"),
-        subtitle = tr("外观和查询保护"),
         color = barColor,
         defaultWindowInsetsPadding = true,
     )

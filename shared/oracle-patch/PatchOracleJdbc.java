@@ -50,6 +50,9 @@ public final class PatchOracleJdbc {
                 }
                 if (name.endsWith(".class")) bytes = transform(bytes, relocation);
                 if (relocation != null && name.startsWith("oracle/")) name = relocation.prefix + name;
+                // Both Oracle jars carry META-INF/license.txt; the Android library merge rejects the
+                // duplicate, so the relocated copy keeps its text under its own name.
+                if (relocation != null && "META-INF/license.txt".equalsIgnoreCase(name)) name = "META-INF/license-ojdbc19.txt";
                 JarEntry next = new JarEntry(name);
                 jarOut.putNextEntry(next);
                 jarOut.write(bytes);

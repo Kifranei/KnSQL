@@ -69,7 +69,6 @@ internal val dialogTexts = listOf<Text>(
     Text("删除 {0}", "刪除 {0}", "Delete {0}"),
 
     // SettingsPage.kt
-    Text("外观和查询保护", "外觀與查詢保護", "Appearance and query safeguards"),
     Text("外观", "外觀", "Appearance"),
     Text("跟随系统", "跟隨系統", "Follow system"),
     Text("浅色", "淺色", "Light"),

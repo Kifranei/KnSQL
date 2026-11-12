@@ -49,7 +49,6 @@ fun ConnectionsPage(
     SmallTopAppBar(
         title = tr("连接"),
         color = barColor,
-        subtitle = "Oracle · MySQL · MariaDB · PostgreSQL · SQL Server · SQLite · " + tr("达梦"),
         defaultWindowInsetsPadding = true,
         actions = {
             IconButton(onClick = { onOverlay(ActiveOverlay.Editor(null)) }) {
