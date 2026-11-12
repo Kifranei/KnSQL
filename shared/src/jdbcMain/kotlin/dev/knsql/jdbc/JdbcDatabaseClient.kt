@@ -1,6 +1,7 @@
 package dev.knsql.jdbc
 
 import dev.knsql.data.DatabaseClient
+import dev.knsql.data.SqliteFiles
 import dev.knsql.data.prepareDatabaseNetwork
 import dev.knsql.i18n.tr
 import dev.knsql.model.ConnectionDraft
@@ -84,7 +85,8 @@ object JdbcDatabaseClient : DatabaseClient {
         try {
             statement.queryTimeout = timeoutSec.coerceAtLeast(1)
             statement.maxRows = if (maxRows <= 0) 0 else maxRows + 1
-            statement.fetchSize = 100
+            // sqlite-jdbc rejects a fetch size above maxRows.
+            runCatching { statement.fetchSize = if (maxRows <= 0) 100 else minOf(100, maxRows + 1) }
             val started = System.nanoTime()
             val hasResult = statement.execute(sql)
             val results = mutableListOf<QueryResult>()
@@ -162,7 +164,7 @@ object JdbcDatabaseClient : DatabaseClient {
                     table.schema ?: currentOracleSchema(connection), table.schema ?: currentOracleSchema(connection),
                     table.name, table.name,
                 )
-                Engine.MySql -> pairs(
+                Engine.MySql, Engine.MariaDb -> pairs(
                     connection,
                     "SELECT COLUMN_NAME, COLUMN_COMMENT FROM information_schema.COLUMNS " +
                         "WHERE TABLE_SCHEMA = COALESCE(?, DATABASE()) AND TABLE_NAME = ? AND COLUMN_COMMENT <> ''",
@@ -170,6 +172,16 @@ object JdbcDatabaseClient : DatabaseClient {
                 )
                 Engine.SqlServer -> sqlServerColumnComments(connection, table.catalog, table.schema, table.name)
                 Engine.Dameng -> damengColumnComments(connection, table)
+                Engine.PostgreSql -> pairs(
+                    connection,
+                    "SELECT a.attname, d.description FROM pg_catalog.pg_attribute a " +
+                        "JOIN pg_catalog.pg_class c ON c.oid = a.attrelid " +
+                        "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace " +
+                        "JOIN pg_catalog.pg_description d ON d.objoid = c.oid AND d.objsubid = a.attnum " +
+                        "WHERE n.nspname = COALESCE(?, current_schema()) AND c.relname = ? AND a.attnum > 0",
+                    table.schema, table.name,
+                )
+                Engine.Sqlite -> emptyMap()
             }.mapKeys { it.key.uppercase() }
         }
 
@@ -239,7 +251,33 @@ object JdbcDatabaseClient : DatabaseClient {
         if (draft.password.isNotEmpty()) props["password"] = draft.password
         val url = when (draft.engine) {
             Engine.MySql -> mysqlUrl(draft.host.trim(), port, draft.database.trim(), draft.encrypt)
-            Engine.SqlServer -> sqlServerUrl(draft.host.trim(), port, draft.database.trim(), draft.encrypt)
+            Engine.MariaDb -> {
+                ensureDriver("org.mariadb.jdbc.Driver", "MariaDB")
+                mariaDbUrl(draft.host.trim(), port, draft.database.trim(), draft.encrypt)
+            }
+            Engine.PostgreSql -> {
+                ensureDriver("org.postgresql.Driver", "PostgreSQL")
+                postgresUrl(draft.host.trim(), port, draft.database.trim(), draft.encrypt)
+            }
+            Engine.Sqlite -> {
+                ensureDriver("org.sqlite.JDBC", "SQLite")
+                props.remove("user")
+                props.remove("password")
+                val file = SqliteFiles.resolve(draft.database)
+                if (draft.readOnly) {
+                    // xerial cannot switch to read-only after opening, so the file is opened read-only.
+                    props["open_mode"] = "1"
+                    if (!file.exists()) throw java.sql.SQLException(tr("找不到数据库文件 {0}", file.path))
+                } else {
+                    file.parentFile?.mkdirs()
+                }
+                props["foreign_keys"] = "true"
+                props["busy_timeout"] = "5000"
+                "jdbc:sqlite:" + file.path
+            }
+            Engine.SqlServer -> sqlServerUrl(
+                draft.host.trim(), port, draft.instance.trim(), draft.database.trim(), draft.encrypt, draft.trustServerCertificate,
+            )
             Engine.Dameng -> {
                 ensureDriver("dm.jdbc.driver.DmDriver", "DM")
                 props["connectTimeout"] = "15000"
@@ -350,15 +388,17 @@ object JdbcDatabaseClient : DatabaseClient {
         val meta = live.connection.metaData
         return when (live.engine) {
             Engine.Oracle -> oracleSchemas(live)
-            Engine.MySql -> catalogs(meta).map { MetaNode(it, NodeKind.Catalog, catalog = it) }
+            Engine.MySql, Engine.MariaDb -> catalogs(meta).map { MetaNode(it, NodeKind.Catalog, catalog = it) }
             Engine.SqlServer -> catalogs(meta).map { MetaNode(it, NodeKind.Catalog, catalog = it) }
             Engine.Dameng -> damengSchemas(live)
+            Engine.PostgreSql -> postgresSchemas(live)
+            Engine.Sqlite -> loadRelations(live, null, null)
         }
     }
 
     private fun loadUnderCatalog(live: LiveConnection, catalog: String): List<MetaNode> {
         val schemas = schemas(live.connection.metaData, catalog)
-        if (live.engine == Engine.MySql || schemas.isEmpty() || schemas.all { it.equals(catalog, true) }) {
+        if (live.engine.mysqlLike || schemas.isEmpty() || schemas.all { it.equals(catalog, true) }) {
             return loadRelations(live, catalog, null)
         }
         return schemas.map { MetaNode(it, NodeKind.Schema, catalog = catalog, schema = it) }
@@ -368,10 +408,16 @@ object JdbcDatabaseClient : DatabaseClient {
         if (live.engine == Engine.Oracle) return oracleRelations(live, schema)
         val meta = live.connection.metaData
         val nodes = mutableListOf<MetaNode>()
-        meta.getTables(catalog, schema, "%", arrayOf("TABLE", "VIEW")).use { set ->
+        val types = if (live.engine == Engine.PostgreSql) {
+            arrayOf("TABLE", "VIEW", "PARTITIONED TABLE", "MATERIALIZED VIEW", "FOREIGN TABLE")
+        } else {
+            arrayOf("TABLE", "VIEW")
+        }
+        meta.getTables(catalog, schema, "%", types).use { set ->
             var count = 0
             while (set.next() && count < 800) {
                 val name = set.getString("TABLE_NAME") ?: continue
+                if (live.engine == Engine.Sqlite && name.startsWith("sqlite_")) continue
                 val type = set.getString("TABLE_TYPE") ?: "TABLE"
                 val kind = if (type.contains("VIEW", true)) NodeKind.View else NodeKind.Table
                 val remark = runCatching { set.getString("REMARKS") }.getOrNull()?.takeIf { it.isNotBlank() }
@@ -379,7 +425,7 @@ object JdbcDatabaseClient : DatabaseClient {
                     label = name,
                     kind = kind,
                     catalog = catalog,
-                    schema = schema ?: set.getString("TABLE_SCHEM"),
+                    schema = if (live.engine == Engine.Sqlite) null else schema ?: set.getString("TABLE_SCHEM"),
                     relation = name,
                     relationType = type,
                     comment = remark,
@@ -431,6 +477,20 @@ object JdbcDatabaseClient : DatabaseClient {
             }
         }
         return nodes.map { it.copy(relation = parent.relation) }
+    }
+
+    /** Schemas of the connected PostgreSQL database; system schemas stay hidden, the current one comes first. */
+    private fun postgresSchemas(live: LiveConnection): List<MetaNode> {
+        val current = runCatching { queryOne(live.connection, "SELECT current_schema()") }.getOrNull()
+        return schemas(live.connection.metaData, null)
+            .filter { name ->
+                name == current || !(
+                    name == "information_schema" || name == "pg_catalog" ||
+                        name.startsWith("pg_toast") || name.startsWith("pg_temp")
+                    )
+            }
+            .sortedWith(compareBy<String> { if (it == current) 0 else 1 }.thenBy { it })
+            .map { MetaNode(it, NodeKind.Schema, schema = it) }
     }
 
     /** DM separates users from schemas, so schemas come from JDBC metadata rather than ALL_USERS. */
@@ -698,6 +758,22 @@ private fun mysqlUrl(host: String, port: Int, database: String, encrypt: Boolean
         "&useUnicode=true&characterEncoding=utf8&allowPublicKeyRetrieval=true&sslMode=$ssl"
 }
 
+/** MariaDB 10.x / 11.x through the same MariaDB Connector/J as MySQL. */
+private fun mariaDbUrl(host: String, port: Int, database: String, encrypt: Boolean): String =
+    mysqlUrl(host, port, database, encrypt)
+
+/**
+ * pgjdbc. GSS encryption is switched off because it needs org.ietf.jgss, which Android lacks; with
+ * [encrypt] the link requires TLS without checking the certificate chain (sslmode=require).
+ * stringtype=unspecified lets text bind values land in uuid / json / enum / date columns.
+ */
+internal fun postgresUrl(host: String, port: Int, database: String, encrypt: Boolean): String {
+    val db = java.net.URLEncoder.encode(database.ifBlank { "postgres" }, "UTF-8")
+    val ssl = if (encrypt) "require" else "disable"
+    return "jdbc:postgresql://$host:$port/$db?connectTimeout=15&socketTimeout=660&tcpKeepAlive=true" +
+        "&stringtype=unspecified&gssEncMode=disable&sslmode=$ssl&ApplicationName=KnSQL"
+}
+
 /** DM 7 / DM 8. The optional database field is the default schema. */
 private fun damengUrl(host: String, port: Int, schema: String): String {
     val query = if (schema.isBlank()) "" else "?schema=" + java.net.URLEncoder.encode(schema, "UTF-8")
@@ -708,20 +784,42 @@ private fun oracleUrl(host: String, port: Int, database: String, sid: Boolean): 
     return if (sid) "jdbc:oracle:thin:@$host:$port:$database" else "jdbc:oracle:thin:@//$host:$port/$database"
 }
 
-private fun sqlServerUrl(host: String, port: Int, database: String, encrypt: Boolean): String {
-    val microsoft = runCatching {
-        Class.forName("com.microsoft.sqlserver.jdbc.SQLServerDriver")
-        true
-    }.getOrDefault(false)
+/**
+ * SQL Server. A named instance (HOST\\SQLEXPRESS) is found through the SQL Browser service on UDP 1434;
+ * an explicit port wins over the instance name in mssql-jdbc, so the default 1433 is left out then.
+ */
+internal fun sqlServerUrl(
+    host: String,
+    port: Int,
+    instance: String,
+    database: String,
+    encrypt: Boolean,
+    trustServerCertificate: Boolean,
+    microsoft: Boolean = microsoftSqlServerDriver(),
+): String {
+    val named = instance.isNotBlank()
+    val usePort = !named || port != Engine.SqlServer.defaultPort
     if (microsoft) {
+        val address = buildString {
+            append(host)
+            if (named) append("\\").append(instance)
+            if (usePort) append(":").append(port)
+        }
         val db = if (database.isBlank()) "" else ";databaseName=$database"
         val secure = if (encrypt) "true" else "false"
-        return "jdbc:sqlserver://$host:$port$db;encrypt=$secure;trustServerCertificate=true;loginTimeout=8"
+        return "jdbc:sqlserver://$address$db;encrypt=$secure;trustServerCertificate=$trustServerCertificate;loginTimeout=8"
     }
     Class.forName("net.sourceforge.jtds.jdbc.Driver")
     val db = if (database.isBlank()) "" else "/$database"
-    return "jdbc:jtds:sqlserver://$host:$port$db;loginTimeout=8;socketKeepAlive=true"
+    val address = if (usePort) "$host:$port" else host
+    val named2 = if (named) ";instance=$instance" else ""
+    return "jdbc:jtds:sqlserver://$address$db$named2;loginTimeout=8;socketKeepAlive=true"
 }
+
+private fun microsoftSqlServerDriver(): Boolean = runCatching {
+    Class.forName("com.microsoft.sqlserver.jdbc.SQLServerDriver")
+    true
+}.getOrDefault(false)
 
 private fun Throwable.explain(): String = generateSequence(this) { it.cause }
     .take(5)
@@ -734,6 +832,8 @@ private fun registerDrivers() {
         "com.microsoft.sqlserver.jdbc.SQLServerDriver",
         "net.sourceforge.jtds.jdbc.Driver",
         "dm.jdbc.driver.DmDriver",
+        "org.postgresql.Driver",
+        "org.sqlite.JDBC",
     ).forEach { name -> runCatching { Class.forName(name) } }
 }
 

@@ -134,10 +134,12 @@ fun StructureEditorPage(workbench: Workbench, state: StructureEditorState) {
             existing = (editing as? ColumnTarget.Existing)?.column,
             onDismiss = { target = null },
             onSubmit = { spec ->
-                when (editing) {
-                    ColumnTarget.New -> state.proposeAdd(spec)
-                    is ColumnTarget.Existing -> if (!state.proposeAlter(editing.column, spec)) workbench.report(tr("没有修改"))
-                }
+                runCatching {
+                    when (editing) {
+                        ColumnTarget.New -> state.proposeAdd(spec)
+                        is ColumnTarget.Existing -> if (!state.proposeAlter(editing.column, spec)) workbench.report(tr("没有修改"))
+                    }
+                }.onFailure { error -> workbench.report(error.message ?: error.toString()) }
                 target = null
             },
         )
@@ -160,7 +162,8 @@ fun StructureEditorPage(workbench: Workbench, state: StructureEditorState) {
                         if (text.trim() == structure.comment.orEmpty()) {
                             workbench.report(tr("没有修改"))
                         } else {
-                            state.proposeTableComment(text.trim())
+                            runCatching { state.proposeTableComment(text.trim()) }
+                                .onFailure { error -> workbench.report(error.message ?: error.toString()) }
                         }
                     },
                 )
@@ -204,7 +207,9 @@ private fun ColumnDialog(
     var comment by remember { mutableStateOf(existing?.comment.orEmpty()) }
     val typeHint = when (engine) {
         Engine.Oracle -> "VARCHAR2(50 CHAR) · NUMBER(10,2) · DATE"
-        Engine.MySql -> "varchar(50) · int · decimal(10,2) · datetime"
+        Engine.MySql, Engine.MariaDb -> "varchar(50) · int · decimal(10,2) · datetime"
+        Engine.PostgreSql -> "varchar(50) · integer · numeric(10,2) · timestamp"
+        Engine.Sqlite -> "TEXT · INTEGER · REAL · NUMERIC"
         Engine.SqlServer -> "nvarchar(50) · int · decimal(10,2) · datetime2(0)"
         Engine.Dameng -> "VARCHAR(50) · INT · DECIMAL(10,2) · TIMESTAMP"
     }

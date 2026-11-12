@@ -12,6 +12,8 @@ oracle = "23.6.0.24.10"
 oracleLegacy = "19.33.0.0"
 dameng = "8.1.5.45"
 jtds = "1.3.1"
+postgresql = "42.7.14"
+sqlite = "3.54.1.0"
 
 [libraries]
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
@@ -29,6 +31,8 @@ oracle = { module = "com.oracle.database.jdbc:ojdbc11", version.ref = "oracle" }
 ojdbcLegacy = { module = "com.oracle.database.jdbc:ojdbc8", version.ref = "oracleLegacy" }
 dameng = { module = "com.dameng:DmJdbcDriver8", version.ref = "dameng" }
 jtds = { module = "net.sourceforge.jtds:jtds", version.ref = "jtds" }
+postgresql = { module = "org.postgresql:postgresql", version.ref = "postgresql" }
+sqlite = { module = "org.xerial:sqlite-jdbc", version.ref = "sqlite" }
 
 [plugins]
 androidApplication = { id = "com.android.application", version.ref = "agp" }

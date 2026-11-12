@@ -77,6 +77,8 @@ kotlin {
                 implementation(files(legacyOracleJar) { builtBy(relocateLegacyOracleJdbc) })
                 implementation(libs.jtds)
                 implementation(libs.dameng)
+                implementation(libs.postgresql)
+                implementation(libs.sqlite)
             }
         }
 
@@ -100,6 +102,9 @@ kotlin {
             implementation(files(legacyOracleJar) { builtBy(relocateLegacyOracleJdbc) })
             implementation(libs.jtds)
             implementation(libs.dameng)
+            implementation(libs.postgresql)
+            // Java part only on Android; androidApp packages the natives-android .so files as jniLibs.
+            implementation(libs.sqlite)
         }
         commonTest.dependencies {
             implementation(kotlin("test"))

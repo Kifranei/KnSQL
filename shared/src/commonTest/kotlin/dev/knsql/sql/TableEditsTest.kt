@@ -112,4 +112,72 @@ class TableEditsTest {
         assertEquals("SELECT * FROM \"HR\".\"EMP\" WHERE ROWNUM <= 200", dev.knsql.model.previewSql(Engine.Oracle, null, "HR", "EMP"))
         assertEquals("SELECT * FROM \"SYSDBA\".\"EMP\" LIMIT 200", dev.knsql.model.previewSql(Engine.Dameng, null, "SYSDBA", "EMP"))
     }
+
+    @Test
+    fun mariaDbSharesMySqlSyntax() {
+        val s = structure(Engine.MariaDb, TableRef("shop", null, "items"))
+        val data = EditableData(s, keyNames = listOf("ID"), rows = listOf(EditableRow(listOf("7"), listOf("7", "x"))), truncated = false)
+        val statements = buildDataChanges(data, PendingChanges(edits = mapOf(0 to mapOf(1 to "it's")), inserts = listOf(emptyMap())))
+        assertEquals("UPDATE `shop`.`items` SET `NAME` = 'it''s' WHERE `ID` = 7", statements[0].preview)
+        assertEquals("INSERT INTO `shop`.`items` () VALUES ()", statements[1].sql)
+        assertEquals("SELECT * FROM `shop`.`items` LIMIT 200", dev.knsql.model.previewSql(Engine.MariaDb, "shop", null, "items"))
+    }
+
+    @Test
+    fun postgresUsesSchemaAndStandardDdl() {
+        val s = structure(Engine.PostgreSql, TableRef(null, "public", "Items"))
+        val data = EditableData(s, keyNames = listOf("ID"), rows = listOf(EditableRow(listOf("1"), listOf("1", "a"))), truncated = false)
+        val statements = buildDataChanges(data, PendingChanges(edits = mapOf(0 to mapOf(1 to "b")), inserts = listOf(emptyMap())))
+        assertEquals("UPDATE \"public\".\"Items\" SET \"NAME\" = ? WHERE \"ID\" = ?", statements[0].sql)
+        assertEquals("INSERT INTO \"public\".\"Items\" DEFAULT VALUES", statements[1].sql)
+        assertEquals(
+            listOf(
+                "ALTER TABLE \"public\".\"Items\" RENAME COLUMN \"NAME\" TO \"TITLE\"",
+                "ALTER TABLE \"public\".\"Items\" ALTER COLUMN \"TITLE\" TYPE varchar(80), " +
+                    "ALTER COLUMN \"TITLE\" SET DEFAULT 'x', ALTER COLUMN \"TITLE\" SET NOT NULL",
+                "COMMENT ON COLUMN \"public\".\"Items\".\"TITLE\" IS NULL",
+            ),
+            alterColumnDdl(s, name.copy(type = "varchar(50)"), ColumnSpec("TITLE", "varchar(80)", false, "'x'", null)),
+        )
+        assertEquals(
+            listOf(
+                "ALTER TABLE \"public\".\"Items\" ADD COLUMN \"CODE\" text NOT NULL",
+                "COMMENT ON COLUMN \"public\".\"Items\".\"CODE\" IS '编码'",
+            ),
+            addColumnDdl(s, ColumnSpec("CODE", "text", false, null, "编码")),
+        )
+        assertEquals(listOf("COMMENT ON TABLE \"public\".\"Items\" IS 'x'"), tableCommentDdl(s, "x"))
+        assertEquals("SELECT * FROM \"public\".\"Items\" LIMIT 200", dev.knsql.model.previewSql(Engine.PostgreSql, null, "public", "Items"))
+        val flag = BindValueFor.boolean("1")
+        assertEquals("TRUE", previewLiteral(Engine.PostgreSql, flag))
+    }
+
+    @Test
+    fun sqliteUsesRowidWithoutPrimaryKey() {
+        val plain = TableStructure(Engine.Sqlite, TableRef(null, null, "notes"), listOf(name), comment = null)
+        val data = EditableData(plain, keyNames = listOf("rowid"), rows = listOf(EditableRow(listOf("3"), listOf("a"))), truncated = false)
+        val statements = buildDataChanges(data, PendingChanges(edits = mapOf(0 to mapOf(0 to "b")), deleted = emptySet()))
+        assertEquals("UPDATE \"notes\" SET \"NAME\" = ? WHERE rowid = CAST(? AS INTEGER)", statements.single().sql)
+        assertEquals("UPDATE \"notes\" SET \"NAME\" = 'b' WHERE rowid = CAST('3' AS INTEGER)", statements.single().preview)
+        assertEquals("SELECT * FROM \"notes\" LIMIT 200", dev.knsql.model.previewSql(Engine.Sqlite, null, null, "notes"))
+    }
+
+    @Test
+    fun sqliteOnlyRenamesColumns() {
+        val s = structure(Engine.Sqlite, TableRef(null, null, "t"))
+        assertEquals(
+            listOf("ALTER TABLE \"t\" RENAME COLUMN \"NAME\" TO \"TITLE\""),
+            alterColumnDdl(s, name, ColumnSpec("TITLE", name.type, true, null, "名称")),
+        )
+        assertTrue(runCatching { alterColumnDdl(s, name, ColumnSpec("NAME", "TEXT", true, null, "名称")) }.isFailure)
+        assertEquals(listOf("ALTER TABLE \"t\" DROP COLUMN \"NAME\""), dropColumnDdl(s, "NAME"))
+        assertEquals(
+            listOf("ALTER TABLE \"t\" ADD COLUMN \"N\" INTEGER DEFAULT 0 NOT NULL"),
+            addColumnDdl(s, ColumnSpec("N", "INTEGER", false, "0", null)),
+        )
+    }
+}
+
+private object BindValueFor {
+    fun boolean(text: String) = dev.knsql.model.BindValue(text, ValueKind.Boolean)
 }

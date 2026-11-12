@@ -1,5 +1,6 @@
 package dev.knsql.sql
 
+import dev.knsql.i18n.tr
 import dev.knsql.model.BindValue
 import dev.knsql.model.BoundStatement
 import dev.knsql.model.ColumnInfo
@@ -13,24 +14,25 @@ import dev.knsql.model.ValueKind
 // ---------------------------------------------------------------- quoting
 
 fun quoteIdentifier(engine: Engine, name: String): String = when (engine) {
-    Engine.Oracle, Engine.Dameng -> "\"" + name.replace("\"", "\"\"") + "\""
-    Engine.MySql -> "`" + name.replace("`", "``") + "`"
+    Engine.Oracle, Engine.Dameng, Engine.PostgreSql, Engine.Sqlite -> "\"" + name.replace("\"", "\"\"") + "\""
+    Engine.MySql, Engine.MariaDb -> "`" + name.replace("`", "``") + "`"
     Engine.SqlServer -> "[" + name.replace("]", "]]") + "]"
 }
 
 /** Fully qualified table name. The structure must already be resolved (owner / database / schema set). */
 fun qualifiedTable(engine: Engine, table: TableRef): String {
     val parts = when (engine) {
-        Engine.Oracle, Engine.Dameng -> listOfNotNull(table.schema, table.name)
-        Engine.MySql -> listOfNotNull(table.catalog ?: table.schema, table.name)
+        Engine.Oracle, Engine.Dameng, Engine.PostgreSql -> listOfNotNull(table.schema, table.name)
+        Engine.MySql, Engine.MariaDb -> listOfNotNull(table.catalog ?: table.schema, table.name)
+        Engine.Sqlite -> listOf(table.name)
         Engine.SqlServer -> listOfNotNull(table.catalog, table.schema ?: "dbo", table.name)
     }
     return parts.joinToString(".") { quoteIdentifier(engine, it) }
 }
 
 fun stringLiteral(engine: Engine, text: String): String = when (engine) {
-    Engine.Oracle, Engine.Dameng -> "'" + text.replace("'", "''") + "'"
-    Engine.MySql -> "'" + text.replace("\\", "\\\\").replace("'", "''") + "'"
+    Engine.Oracle, Engine.Dameng, Engine.PostgreSql, Engine.Sqlite -> "'" + text.replace("'", "''") + "'"
+    Engine.MySql, Engine.MariaDb -> "'" + text.replace("\\", "\\\\").replace("'", "''") + "'"
     Engine.SqlServer -> "N'" + text.replace("'", "''") + "'"
 }
 
@@ -39,7 +41,11 @@ fun previewLiteral(engine: Engine, value: BindValue): String {
     val text = value.text ?: return "NULL"
     return when (value.kind) {
         ValueKind.Number -> if (text.trim().toDoubleOrNull() != null) text.trim() else stringLiteral(engine, text)
-        ValueKind.Boolean -> text.trim()
+        ValueKind.Boolean -> if (engine == Engine.PostgreSql) {
+            if (text.trim() == "1" || text.trim().equals("true", true)) "TRUE" else "FALSE"
+        } else {
+            text.trim()
+        }
         ValueKind.DateTime -> if (engine.oracleLike) "TIMESTAMP " + stringLiteral(engine, text.trim()) else stringLiteral(engine, text.trim())
         ValueKind.Date -> if (engine.oracleLike) "DATE " + stringLiteral(engine, text.trim().take(10)) else stringLiteral(engine, text.trim())
         else -> stringLiteral(engine, text)
@@ -74,6 +80,9 @@ fun buildDataChanges(data: EditableData, changes: PendingChanges): List<BoundSta
         val row = data.rows[rowIndex]
         if (engine == Engine.Oracle) {
             return "ROWID = CHARTOROWID(?)" to listOf(BindValue(row.key.firstOrNull(), ValueKind.Text))
+        }
+        if (engine == Engine.Sqlite && data.keyNames == listOf("rowid")) {
+            return "rowid = CAST(? AS INTEGER)" to listOf(BindValue(row.key.firstOrNull(), ValueKind.Text))
         }
         val parts = data.keyNames.mapIndexed { index, name ->
             val column = columns.first { it.name == name }
@@ -111,7 +120,7 @@ fun buildDataChanges(data: EditableData, changes: PendingChanges): List<BoundSta
     changes.inserts.forEach { row ->
         val ordered = row.toSortedMap()
         val sql = if (ordered.isEmpty()) {
-            if (engine == Engine.MySql) "INSERT INTO $table () VALUES ()" else "INSERT INTO $table DEFAULT VALUES"
+            if (engine.mysqlLike) "INSERT INTO $table () VALUES ()" else "INSERT INTO $table DEFAULT VALUES"
         } else {
             "INSERT INTO $table (" + ordered.keys.joinToString(", ") { quoteIdentifier(engine, columns[it].name) } +
                 ") VALUES (" + ordered.keys.joinToString(", ") { "?" } + ")"
@@ -161,7 +170,7 @@ private fun sqlServerComment(table: TableRef, column: String?, comment: String?)
 }
 
 private fun mysqlColumnDefinition(spec: ColumnSpec, old: ColumnInfo?): String = buildString {
-    val e = Engine.MySql
+    val e = Engine.MySql // MariaDB quotes and escapes the same way
     append(quoteIdentifier(e, spec.name)).append(' ').append(spec.type.trim())
     append(if (spec.nullable) " NULL" else " NOT NULL")
     append(defaultClause(spec.defaultValue))
@@ -180,7 +189,17 @@ fun addColumnDdl(structure: TableStructure, spec: ColumnSpec): List<String> {
                 (if (spec.nullable) "" else " NOT NULL") + ")",
             spec.comment?.takeIf { it.isNotEmpty() }?.let { "COMMENT ON COLUMN $table.$name IS ${stringLiteral(engine, it)}" },
         )
-        Engine.MySql -> listOf("ALTER TABLE $table ADD COLUMN ${mysqlColumnDefinition(spec, null)}")
+        Engine.MySql, Engine.MariaDb -> listOf("ALTER TABLE $table ADD COLUMN ${mysqlColumnDefinition(spec, null)}")
+        Engine.PostgreSql -> listOfNotNull(
+            "ALTER TABLE $table ADD COLUMN $name ${spec.type.trim()}${defaultClause(spec.defaultValue)}" +
+                (if (spec.nullable) "" else " NOT NULL"),
+            spec.comment?.takeIf { it.isNotEmpty() }?.let { "COMMENT ON COLUMN $table.$name IS ${stringLiteral(engine, it)}" },
+        )
+        // SQLite has no column comments.
+        Engine.Sqlite -> listOf(
+            "ALTER TABLE $table ADD COLUMN $name ${spec.type.trim()}${defaultClause(spec.defaultValue)}" +
+                (if (spec.nullable) "" else " NOT NULL"),
+        )
         Engine.SqlServer -> {
             val default = spec.defaultValue?.trim()?.takeIf { it.isNotEmpty() }?.let {
                 " CONSTRAINT " + quoteIdentifier(engine, "DF_${structure.table.name}_${spec.name}") + " DEFAULT $it"
@@ -220,7 +239,26 @@ fun alterColumnDdl(structure: TableStructure, old: ColumnInfo, spec: ColumnSpec)
             }
             if (commentChanged) out += "COMMENT ON COLUMN $table.$name IS ${stringLiteral(engine, newComment.orEmpty())}"
         }
-        Engine.MySql -> {
+        Engine.PostgreSql -> {
+            if (renamed) out += "ALTER TABLE $table RENAME COLUMN ${quoteIdentifier(engine, old.name)} TO $name"
+            val changes = buildList {
+                if (typeChanged) add("ALTER COLUMN $name TYPE ${spec.type.trim()}")
+                if (defaultChanged) add(if (newDefault == null) "ALTER COLUMN $name DROP DEFAULT" else "ALTER COLUMN $name SET DEFAULT $newDefault")
+                if (nullChanged) add(if (spec.nullable) "ALTER COLUMN $name DROP NOT NULL" else "ALTER COLUMN $name SET NOT NULL")
+            }
+            if (changes.isNotEmpty()) out += "ALTER TABLE $table " + changes.joinToString(", ")
+            if (commentChanged) {
+                out += "COMMENT ON COLUMN $table.$name IS " + (newComment?.let { stringLiteral(engine, it) } ?: "NULL")
+            }
+        }
+        Engine.Sqlite -> {
+            // SQLite can rename a column (3.25+) but not change its type, nullability or default in place.
+            if (typeChanged || nullChanged || defaultChanged || commentChanged) {
+                throw IllegalArgumentException(tr("SQLite 只能重命名列；修改类型、可空或默认值需要重建表。"))
+            }
+            if (renamed) out += "ALTER TABLE $table RENAME COLUMN ${quoteIdentifier(engine, old.name)} TO $name"
+        }
+        Engine.MySql, Engine.MariaDb -> {
             if (renamed || typeChanged || nullChanged || defaultChanged || commentChanged) {
                 out += "ALTER TABLE $table CHANGE COLUMN ${quoteIdentifier(engine, old.name)} ${mysqlColumnDefinition(spec, old)}"
             }
@@ -252,7 +290,8 @@ fun dropColumnDdl(structure: TableStructure, column: String): List<String> {
     val table = qualifiedTable(engine, structure.table)
     val name = quoteIdentifier(engine, column)
     return when (engine) {
-        Engine.Oracle, Engine.Dameng, Engine.MySql -> listOf("ALTER TABLE $table DROP COLUMN $name")
+        Engine.Oracle, Engine.Dameng, Engine.MySql, Engine.MariaDb, Engine.PostgreSql, Engine.Sqlite ->
+            listOf("ALTER TABLE $table DROP COLUMN $name")
         Engine.SqlServer -> listOf(
             sqlServerDropDefault(structure.table, column),
             "ALTER TABLE ${sqlServerObject(structure.table)} DROP COLUMN $name",
@@ -266,7 +305,9 @@ fun tableCommentDdl(structure: TableStructure, comment: String?): List<String> {
     val text = comment?.takeIf { it.isNotEmpty() }
     return when (engine) {
         Engine.Oracle, Engine.Dameng -> listOf("COMMENT ON TABLE $table IS ${stringLiteral(engine, text.orEmpty())}")
-        Engine.MySql -> listOf("ALTER TABLE $table COMMENT = ${stringLiteral(engine, text.orEmpty())}")
+        Engine.PostgreSql -> listOf("COMMENT ON TABLE $table IS " + (text?.let { stringLiteral(engine, it) } ?: "NULL"))
+        Engine.Sqlite -> throw IllegalArgumentException(tr("SQLite 不支持表注释和列注释。"))
+        Engine.MySql, Engine.MariaDb -> listOf("ALTER TABLE $table COMMENT = ${stringLiteral(engine, text.orEmpty())}")
         Engine.SqlServer -> listOf(sqlServerComment(structure.table, null, text))
     }
 }

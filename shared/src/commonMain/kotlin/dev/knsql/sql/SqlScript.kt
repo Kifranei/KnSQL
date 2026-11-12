@@ -145,6 +145,23 @@ fun scriptStatements(script: String): List<ScriptStatement> {
             considerRoutine()
             continue
         }
+        // PostgreSQL dollar quoting: $$ ... $$ or $tag$ ... $tag$ (DO blocks, function bodies).
+        if (char == '$' && delimiter == ";") {
+            val previous = script.getOrNull(index - 1)
+            val tag = dollarTag.matchAt(script, index)?.value
+            if (tag != null && (previous == null || !(previous.isLetterOrDigit() || previous == '_' || previous == '$'))) {
+                val close = script.indexOf(tag, index + tag.length)
+                val end = if (close < 0) script.length else close + tag.length
+                if (!capturing) statementStart = index
+                capturing = true
+                val body = script.substring(index, end)
+                buffer.append(body)
+                lineStart = false
+                index = end
+                considerRoutine()
+                continue
+            }
+        }
         val routineHoldsSemicolon = inRoutine && delimiter == ";"
         if (!routineHoldsSemicolon && script.startsWith(delimiter, index)) {
             val at = if (capturing) statementStart else index
@@ -172,6 +189,8 @@ fun scriptStatements(script: String): List<ScriptStatement> {
 fun isWriteStatement(sql: String): Boolean = writeLead.containsMatchIn(sql)
 
 fun scriptNeedsConfirmation(script: String): Boolean = splitSqlScript(script).any(::isWriteStatement)
+
+private val dollarTag = Regex("\\$(?:[A-Za-z_][A-Za-z0-9_]*)?\\$")
 
 private fun isRoutineBlock(sql: String): Boolean {
     val source = sql.trimStart()

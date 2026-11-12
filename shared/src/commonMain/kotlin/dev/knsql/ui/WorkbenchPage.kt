@@ -222,6 +222,9 @@ private fun ObjectTree(workbench: Workbench, modifier: Modifier) {
                 onDdl = { workbench.showDdl(node) },
                 onEditData = { workbench.openDataEditor(node) },
                 onEditStructure = { workbench.openStructureEditor(node) },
+                // A SQLite file has no schema level, so its whole-database DDL hangs off the session row.
+                sessionDdl = node.meta.kind == NodeKind.Session &&
+                    workbench.connections.find { it.id == node.savedId }?.engine?.fileBased == true,
             )
         }
     }
@@ -264,10 +267,11 @@ private fun TreeRow(
     onDdl: () -> Unit,
     onEditData: () -> Unit,
     onEditStructure: () -> Unit,
+    sessionDdl: Boolean = false,
 ) {
     val kind = node.meta.kind
     val openable = kind == NodeKind.Table || kind == NodeKind.View
-    val container = kind == NodeKind.Schema || kind == NodeKind.Catalog
+    val container = kind == NodeKind.Schema || kind == NodeKind.Catalog || sessionDdl
     val actions = when {
         kind == NodeKind.Table -> listOf(
             tr("预览数据") to onOpen,

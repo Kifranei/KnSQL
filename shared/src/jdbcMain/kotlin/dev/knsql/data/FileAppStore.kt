@@ -72,4 +72,19 @@ class FileAppStore(private val root: File) : AppStore {
     }
 }
 
-fun createFileStore(root: File): AppStore = FileAppStore(root)
+/** Where SQLite files given by a bare name live, and where Android copies picked database files. */
+object SqliteFiles {
+    @Volatile
+    var baseDir: File = File(System.getProperty("user.home") ?: ".", ".knsql/sqlite")
+
+    fun resolve(path: String): File {
+        val trimmed = path.trim().removePrefix("file:")
+        val file = File(trimmed)
+        return if (file.isAbsolute) file else File(baseDir, trimmed)
+    }
+}
+
+fun createFileStore(root: File): AppStore {
+    SqliteFiles.baseDir = File(root, "sqlite")
+    return FileAppStore(root)
+}

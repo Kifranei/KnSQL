@@ -44,9 +44,11 @@ private fun Connection.single(sql: String): String? = rows(sql).firstOrNull()?.f
 
 internal fun loadStructure(engine: Engine, connection: Connection, table: TableRef): TableStructure = when (engine) {
     Engine.Oracle -> oracleStructure(connection, table)
-    Engine.MySql -> mysqlStructure(connection, table)
+    Engine.MySql, Engine.MariaDb -> mysqlStructure(engine, connection, table)
     Engine.SqlServer -> sqlServerStructure(connection, table)
     Engine.Dameng -> damengStructure(connection, table)
+    Engine.PostgreSql -> postgresStructure(connection, table)
+    Engine.Sqlite -> sqliteStructure(connection, table)
 }
 
 // ---------------------------------------------------------------- Oracle
@@ -169,7 +171,7 @@ private fun mysqlDefault(raw: String?, kind: ValueKind, extra: String, nullable:
     }
 }
 
-private fun mysqlStructure(connection: Connection, table: TableRef): TableStructure {
+private fun mysqlStructure(engine: Engine, connection: Connection, table: TableRef): TableStructure {
     val database = table.catalog ?: table.schema ?: connection.single("SELECT DATABASE()")
         ?: throw SQLException(tr("没有选中数据库，无法确定表 {0} 在哪个库", table.name))
     val info = connection.rows(
@@ -199,7 +201,7 @@ private fun mysqlStructure(connection: Connection, table: TableRef): TableStruct
             generated = extra.contains("VIRTUAL GENERATED", true) || extra.contains("STORED GENERATED", true),
         )
     }
-    return TableStructure(Engine.MySql, TableRef(database, null, name), columns, info[1]?.takeIf { it.isNotBlank() })
+    return TableStructure(engine, TableRef(database, null, name), columns, info[1]?.takeIf { it.isNotBlank() })
 }
 
 // ---------------------------------------------------------------- SQL Server
@@ -373,6 +375,111 @@ private fun damengStructure(connection: Connection, table: TableRef): TableStruc
     return TableStructure(Engine.Dameng, TableRef(null, owner, name), columns, comment)
 }
 
+// ---------------------------------------------------------------- PostgreSQL
+
+internal fun postgresKind(typeName: String): ValueKind = when (typeName.lowercase()) {
+    "int2", "int4", "int8", "smallint", "integer", "bigint", "numeric", "decimal", "float4", "float8", "real",
+    "double precision", "oid" -> ValueKind.Number
+    "bool", "boolean" -> ValueKind.Boolean
+    "date" -> ValueKind.Date
+    "time", "timetz" -> ValueKind.Time
+    "timestamp", "timestamptz" -> ValueKind.DateTime
+    "text", "json", "jsonb", "xml" -> ValueKind.Lob
+    "bytea" -> ValueKind.Binary
+    else -> ValueKind.Text
+}
+
+private fun postgresStructure(connection: Connection, table: TableRef): TableStructure {
+    val schema = table.schema ?: connection.single("SELECT current_schema()")
+        ?: throw SQLException(tr("找不到表 {0}，或者没有权限修改它", table.name))
+    val info = connection.rows(
+        "SELECT c.oid::text, c.relname, obj_description(c.oid, 'pg_class') FROM pg_catalog.pg_class c " +
+            "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace " +
+            "WHERE n.nspname = ? AND c.relname = ? AND c.relkind IN ('r', 'p')",
+        schema, table.name,
+    ).firstOrNull() ?: throw SQLException(tr("找不到表 {0}，或者没有权限修改它", table.name))
+    val oid = info[0]!!
+    val keys = connection.rows(
+        "SELECT a.attname FROM pg_catalog.pg_index i JOIN pg_catalog.pg_attribute a " +
+            "ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = CAST(? AS oid) AND i.indisprimary",
+        oid,
+    ).mapNotNull { it[0] }.toSet()
+    fun columnsQuery(modern: Boolean) =
+        "SELECT a.attname, format_type(a.atttypid, a.atttypmod), t.typname, " +
+            "CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END, pg_get_expr(d.adbin, d.adrelid), " +
+            "col_description(a.attrelid, a.attnum), " +
+            (if (modern) "a.attidentity::text, a.attgenerated::text " else "'', '' ") +
+            "FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_type t ON t.oid = a.atttypid " +
+            "LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum " +
+            "WHERE a.attrelid = CAST(? AS oid) AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum"
+    // attidentity arrived in PostgreSQL 10, attgenerated in 12.
+    val rows = runCatching { connection.rows(columnsQuery(true), oid) }.getOrElse { connection.rows(columnsQuery(false), oid) }
+    val columns = rows.map { row ->
+        val default = row[4]?.trim()?.takeIf { it.isNotEmpty() }
+        val identity = !row[6].isNullOrBlank()
+        val generated = !row[7].isNullOrBlank()
+        val serial = default?.startsWith("nextval(", ignoreCase = true) == true
+        ColumnInfo(
+            name = row[0]!!,
+            type = row[1].orEmpty(),
+            kind = postgresKind(row[2].orEmpty()),
+            nullable = row[3] == "YES",
+            defaultValue = default?.takeUnless { serial || generated },
+            comment = row[5]?.takeIf { it.isNotBlank() },
+            primaryKey = row[0] in keys,
+            autoIncrement = identity || serial,
+            generated = generated,
+        )
+    }
+    return TableStructure(Engine.PostgreSql, TableRef(null, schema, info[1]!!), columns, info[2]?.takeIf { it.isNotBlank() })
+}
+
+// ---------------------------------------------------------------- SQLite
+
+/** SQLite type affinity (https://www.sqlite.org/datatype3.html), with dates kept as text. */
+internal fun sqliteKind(declared: String): ValueKind {
+    val t = declared.uppercase()
+    return when {
+        "INT" in t -> ValueKind.Number
+        "CHAR" in t || "CLOB" in t || "TEXT" in t -> ValueKind.Text
+        "BLOB" in t -> ValueKind.Binary
+        "BOOL" in t -> ValueKind.Boolean
+        "DATE" in t || "TIME" in t -> ValueKind.Text
+        "REAL" in t || "FLOA" in t || "DOUB" in t || "NUM" in t || "DEC" in t -> ValueKind.Number
+        else -> ValueKind.Text
+    }
+}
+
+private fun sqliteStructure(connection: Connection, table: TableRef): TableStructure {
+    val name = connection.rows(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? COLLATE NOCASE",
+        table.name,
+    ).firstOrNull()?.firstOrNull() ?: throw SQLException(tr("找不到表 {0}，或者没有权限修改它", table.name))
+    val quoted = quoteIdentifier(Engine.Sqlite, name)
+    // table_xinfo (3.26+) also lists generated columns: hidden = 2 or 3.
+    val rows = runCatching { connection.rows("PRAGMA table_xinfo($quoted)") }
+        .getOrElse { connection.rows("PRAGMA table_info($quoted)") }
+    val pkCount = rows.count { (it[5]?.toIntOrNull() ?: 0) > 0 }
+    val columns = rows.filter { (it.getOrNull(6)?.toIntOrNull() ?: 0) != 1 }.map { row ->
+        val type = row[2].orEmpty()
+        val pk = (row[5]?.toIntOrNull() ?: 0) > 0
+        val hidden = row.getOrNull(6)?.toIntOrNull() ?: 0
+        ColumnInfo(
+            name = row[1]!!,
+            type = type,
+            kind = sqliteKind(type),
+            nullable = row[3] != "1" && !pk,
+            defaultValue = row[4]?.takeIf { it.isNotBlank() },
+            comment = null,
+            primaryKey = pk,
+            // INTEGER PRIMARY KEY is an alias of the rowid and fills itself in.
+            autoIncrement = pk && pkCount == 1 && type.equals("INTEGER", true),
+            generated = hidden == 2 || hidden == 3,
+        )
+    }
+    return TableStructure(Engine.Sqlite, TableRef(null, null, name), columns, null)
+}
+
 // ---------------------------------------------------------------- rows for editing
 
 internal fun loadEditableRows(connection: Connection, structure: TableStructure, maxRows: Int): EditableData {
@@ -380,15 +487,25 @@ internal fun loadEditableRows(connection: Connection, structure: TableStructure,
     val table = qualifiedTable(engine, structure.table)
     val columns = structure.columns
     val list = columns.joinToString(", ") { "t." + quoteIdentifier(engine, it.name) }
-    val keyNames = if (engine == Engine.Oracle) listOf("ROWID") else structure.keyColumns
+    // SQLite tables without a primary key are still addressable through their rowid.
+    val sqliteRowId = engine == Engine.Sqlite && structure.keyColumns.isEmpty()
+    val keyNames = when {
+        engine == Engine.Oracle -> listOf("ROWID")
+        sqliteRowId -> listOf("rowid")
+        else -> structure.keyColumns
+    }
     val limit = maxRows > 0
     val sql = when (engine) {
         // ROWNUM works on every Oracle release; FETCH FIRST needs 12c.
         Engine.Oracle -> "SELECT ROWIDTOCHAR(t.ROWID), $list FROM $table t" + if (limit) " WHERE ROWNUM <= ${maxRows + 1}" else ""
-        Engine.MySql, Engine.Dameng -> "SELECT $list FROM $table t" + if (limit) " LIMIT ${maxRows + 1}" else ""
+        Engine.Sqlite -> "SELECT " + (if (sqliteRowId) "t.rowid, " else "") + "$list FROM $table t" +
+            if (limit) " LIMIT ${maxRows + 1}" else ""
+        Engine.MySql, Engine.MariaDb, Engine.Dameng, Engine.PostgreSql ->
+            "SELECT $list FROM $table t" + if (limit) " LIMIT ${maxRows + 1}" else ""
         Engine.SqlServer -> "SELECT " + (if (limit) "TOP (${maxRows + 1}) " else "") + "$list FROM $table t"
     }
-    val offset = if (engine == Engine.Oracle) 2 else 1
+    val rowIdFirst = engine == Engine.Oracle || sqliteRowId
+    val offset = if (rowIdFirst) 2 else 1
     val keyIndexes = keyNames.map { key -> columns.indexOfFirst { it.name == key } }
     val rows = mutableListOf<EditableRow>()
     var truncated = false
@@ -400,8 +517,8 @@ internal fun loadEditableRows(connection: Connection, structure: TableStructure,
                     truncated = true
                     break
                 }
-                val values = columns.indices.map { index -> readCell(set, index + offset, columns[index].kind) }
-                val key = if (engine == Engine.Oracle) listOf(set.getString(1)) else keyIndexes.map { values.getOrNull(it) }
+                val values = columns.indices.map { index -> readCell(engine, set, index + offset, columns[index].kind) }
+                val key = if (rowIdFirst) listOf(set.getString(1)) else keyIndexes.map { values.getOrNull(it) }
                 rows += EditableRow(key, values)
             }
         }
@@ -409,8 +526,21 @@ internal fun loadEditableRows(connection: Connection, structure: TableStructure,
     return EditableData(structure, keyNames, rows, truncated)
 }
 
-private fun readCell(set: ResultSet, index: Int, kind: ValueKind): String? = when (kind) {
-    ValueKind.Binary -> set.getBytes(index)?.let { "<binary ${it.size} bytes>" }
+private fun readCell(engine: Engine, set: ResultSet, index: Int, kind: ValueKind): String? = when {
+    kind == ValueKind.Binary -> set.getBytes(index)?.let { "<binary ${it.size} bytes>" }
+    // SQLite columns can hold any type whatever they were declared as, so they are read as text.
+    engine == Engine.Sqlite -> set.getString(index)
+    kind == ValueKind.Boolean && engine == Engine.PostgreSql -> set.getString(index)?.let {
+        when (it) {
+            "t" -> "true"
+            "f" -> "false"
+            else -> it
+        }
+    }
+    else -> readTyped(set, index, kind)
+}
+
+private fun readTyped(set: ResultSet, index: Int, kind: ValueKind): String? = when (kind) {
     ValueKind.DateTime -> set.getTimestamp(index)?.toString()?.removeSuffix(".0")
     ValueKind.Number -> set.getBigDecimal(index)?.toPlainString()
     else -> set.getString(index)

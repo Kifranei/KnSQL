@@ -51,8 +51,9 @@ fun TreeNode.tableRef(engine: Engine?): TableRef? {
     val relation = meta.relation ?: return null
     if (meta.kind != NodeKind.Table) return null
     return when (engine) {
-        Engine.Oracle, Engine.Dameng -> TableRef(null, meta.schema, relation)
-        Engine.MySql -> TableRef(meta.catalog ?: meta.schema, null, relation)
+        Engine.Oracle, Engine.Dameng, Engine.PostgreSql -> TableRef(null, meta.schema, relation)
+        Engine.Sqlite -> TableRef(null, null, relation)
+        Engine.MySql, Engine.MariaDb -> TableRef(meta.catalog ?: meta.schema, null, relation)
         else -> TableRef(meta.catalog, meta.schema, relation)
     }
 }

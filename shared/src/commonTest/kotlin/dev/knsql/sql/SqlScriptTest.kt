@@ -68,4 +68,13 @@ class SqlScriptTest {
         val script = "SELECT 1;\nSELECT 2;"
         assertEquals("SELECT 2", statementAt(script, script.indexOf('2')))
     }
+
+    @Test
+    fun keepsPostgresDollarQuotedBodiesTogether() {
+        val script = "DO $$ BEGIN PERFORM 1; END $$;\nSELECT \$tag\$a;b\$tag\$;\nSELECT V\$SESSION FROM t"
+        assertEquals(
+            listOf("DO $$ BEGIN PERFORM 1; END $$", "SELECT \$tag\$a;b\$tag\$", "SELECT V\$SESSION FROM t"),
+            splitSqlScript(script),
+        )
+    }
 }

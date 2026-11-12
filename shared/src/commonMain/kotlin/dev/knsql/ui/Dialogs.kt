@@ -5,6 +5,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -177,6 +178,7 @@ private fun ConnectionEditorDialog(
     var previousCipher by remember { mutableStateOf("") }
     var testMessage by remember { mutableStateOf<String?>(null) }
     var reveal by remember { mutableStateOf(false) }
+    val databaseFilePicker = rememberDatabaseFilePicker()
     LaunchedEffect(show, connectionId) {
         if (!show) return@LaunchedEffect
         val saved = workbench.connections.find { it.id == connectionId }
@@ -200,12 +202,14 @@ private fun ConnectionEditorDialog(
             modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            Engine.entries.chunked(4).forEach { rowEngines ->
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Engine.entries.forEach { engine ->
+                rowEngines.forEach { engine ->
                     val selected = draft.engine == engine
                     val label = when (engine) {
                         Engine.SqlServer -> "MSSQL"
                         Engine.Dameng -> tr("达梦")
+                        Engine.PostgreSql -> "PgSQL"
                         else -> engine.label
                     }
                     Button(
@@ -222,9 +226,47 @@ private fun ConnectionEditorDialog(
                         colors = if (selected) ButtonDefaults.buttonColorsPrimary() else ButtonDefaults.buttonColors(),
                     ) { Text(label, maxLines = 1) }
                 }
+                repeat(4 - rowEngines.size) { Spacer(Modifier.weight(1f)) }
+            }
             }
             TextField(value = draft.name, onValueChange = { draft = draft.copy(name = it) }, label = tr("名称"), singleLine = true)
+            if (draft.engine.fileBased) {
+                TextField(
+                    value = draft.database,
+                    onValueChange = { draft = draft.copy(database = it) },
+                    label = tr("数据库文件"),
+                    singleLine = true,
+                )
+                TextButton(
+                    text = tr("选择文件"),
+                    onClick = {
+                        databaseFilePicker.pick(
+                            onPicked = { path ->
+                                draft = draft.copy(
+                                    database = path,
+                                    name = draft.name.ifBlank { path.substringAfterLast('/').substringAfterLast('\\') },
+                                )
+                            },
+                            onError = { workbench.report(it) },
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    text = databaseFileHint,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    style = MiuixTheme.textStyles.footnote1,
+                )
+            } else {
             TextField(value = draft.host, onValueChange = { draft = draft.copy(host = it) }, label = tr("主机"), singleLine = true)
+            if (draft.engine == Engine.SqlServer) {
+                TextField(
+                    value = draft.instance,
+                    onValueChange = { draft = draft.copy(instance = it) },
+                    label = tr("实例名（可留空）"),
+                    singleLine = true,
+                )
+            }
             TextField(
                 value = draft.port,
                 onValueChange = { draft = draft.copy(port = it.filter(Char::isDigit)) },
@@ -238,6 +280,8 @@ private fun ConnectionEditorDialog(
                 label = when (draft.engine) {
                     Engine.Oracle -> tr("服务名或 SID")
                     Engine.Dameng -> tr("模式（可留空）")
+                    Engine.MySql, Engine.MariaDb, Engine.SqlServer -> tr("数据库（可留空）")
+                    Engine.PostgreSql -> tr("数据库（留空为 postgres）")
                     else -> tr("数据库")
                 },
                 singleLine = true,
@@ -261,6 +305,7 @@ private fun ConnectionEditorDialog(
                     }
                 },
             )
+            }
             if (draft.engine == Engine.Oracle) {
                 SmallTitle(text = "Oracle")
                 WindowDropdownPreference(
@@ -287,12 +332,24 @@ private fun ConnectionEditorDialog(
                     summary = tr("以 SYSDBA 身份登录。"),
                 )
             }
-            if (draft.engine == Engine.SqlServer || draft.engine == Engine.MySql) {
+            if (draft.engine == Engine.SqlServer || draft.engine.mysqlLike || draft.engine == Engine.PostgreSql) {
                 SwitchPreference(
                     checked = draft.encrypt,
                     onCheckedChange = { draft = draft.copy(encrypt = it) },
                     title = tr("加密连接"),
-                    summary = tr("内网自签证书会信任服务器证书。"),
+                    summary = if (draft.engine == Engine.SqlServer) {
+                        tr("服务器设置了强制加密时需要打开。")
+                    } else {
+                        tr("内网自签证书会信任服务器证书。")
+                    },
+                )
+            }
+            if (draft.engine == Engine.SqlServer) {
+                SwitchPreference(
+                    checked = draft.trustServerCertificate,
+                    onCheckedChange = { draft = draft.copy(trustServerCertificate = it) },
+                    title = tr("信任服务器证书"),
+                    summary = tr("不校验证书链，内网自签证书需要打开。"),
                 )
             }
             SwitchPreference(

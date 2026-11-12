@@ -38,4 +38,31 @@ class DriverLoadingTest {
         val dm = driver("dm.jdbc.driver.DmDriver")
         assertTrue(dm.acceptsURL("jdbc:dm://db:5236"))
     }
+
+    @Test
+    fun postgresAndSqliteDriversLoad() {
+        assertTrue(driver("org.postgresql.Driver").acceptsURL(postgresUrl("db", 5432, "app", encrypt = false)))
+        assertTrue(driver("org.mariadb.jdbc.Driver").acceptsURL("jdbc:mariadb://db:3306/app"))
+        val sqlite = driver("org.sqlite.JDBC")
+        val file = java.io.File.createTempFile("knsql", ".db").apply { deleteOnExit() }
+        sqlite.connect("jdbc:sqlite:" + file.path, java.util.Properties())!!.use { connection ->
+            connection.createStatement().use { it.executeQuery("SELECT sqlite_version()").use { set -> assertTrue(set.next()) } }
+        }
+    }
+
+    @Test
+    fun sqlServerUrlsCarryInstanceAndCertificateChoice() {
+        assertEquals(
+            "jdbc:sqlserver://db\\SQLEXPRESS;databaseName=app;encrypt=true;trustServerCertificate=false;loginTimeout=8",
+            sqlServerUrl("db", 1433, "SQLEXPRESS", "app", encrypt = true, trustServerCertificate = false, microsoft = true),
+        )
+        assertEquals(
+            "jdbc:sqlserver://db:14330;encrypt=false;trustServerCertificate=true;loginTimeout=8",
+            sqlServerUrl("db", 14330, "", "", encrypt = false, trustServerCertificate = true, microsoft = true),
+        )
+        assertEquals(
+            "jdbc:jtds:sqlserver://db/app;instance=SQLEXPRESS;loginTimeout=8;socketKeepAlive=true",
+            sqlServerUrl("db", 1433, "SQLEXPRESS", "app", encrypt = false, trustServerCertificate = true, microsoft = false),
+        )
+    }
 }

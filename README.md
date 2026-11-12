@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <b>Oracle 11g R2–23ai · MySQL / MariaDB · SQL Server · 达梦 DM · 整脚本执行 · 对象树 · DDL 导出 · 表数据与结构编辑 · 多语言界面</b>
+  <b>Oracle 11g R2–23ai · MySQL · MariaDB · PostgreSQL · SQL Server · SQLite · 达梦 DM · 整脚本执行 · 对象树 · DDL 导出 · 表数据与结构编辑 · 多语言界面</b>
 </p>
 
 ---
@@ -36,11 +36,15 @@
   | 数据库 | 版本 | 驱动 |
   | :-- | :-- | :-- |
   | **Oracle** | 11g R2、12c、18c、19c、21c、23ai | ojdbc 23（19c 及以上）+ ojdbc 19（11g R2–18c），默认自动选择，也可在连接里指定 |
-  | **MySQL / MariaDB** | MySQL 5.5–9.x（含 8.x 默认的 `caching_sha2_password`），MariaDB 10.x / 11.x | MariaDB Connector/J，可选 TLS 加密 |
-  | **SQL Server** | 2012 及以上（更早版本经 jTDS） | Microsoft JDBC，加载失败时回退 jTDS |
+  | **MySQL** | 5.5–9.x（含 8.x 默认的 `caching_sha2_password`） | MariaDB Connector/J，可选 TLS 加密 |
+  | **MariaDB** | 10.x / 11.x | MariaDB Connector/J，可选 TLS 加密，默认端口 3306 |
+  | **PostgreSQL** | 9.6–18 | PostgreSQL JDBC（pgjdbc），按 Schema 浏览，可选 TLS（`sslmode=require`），默认端口 5432 |
+  | **SQL Server** | 2012 及以上（更早版本经 jTDS） | Microsoft JDBC，加载失败时回退 jTDS；支持命名实例（`HOST\SQLEXPRESS`）和「信任服务器证书」开关 |
+  | **SQLite** | SQLite 3 数据库文件 | SQLite JDBC（xerial，自带 SQLite 3.54 引擎）；桌面直接打开文件，Android 把选中的文件复制到应用私有目录再打开 |
   | **达梦 DM** | DM7 / DM8 | 达梦官方 JDBC（`DmJdbcDriver8`），默认端口 5236 |
 
 - Oracle 按服务名或 SID 连接，连不上时自动互相回退，可选 SYSDBA；达梦的「模式」可留空，留空时使用登录用户的默认模式。
+- SQLite 没有主机和账号，只填数据库文件；没有主键的表按 `rowid` 编辑；改列只支持重命名（SQLite 本身不能原地改类型），也没有注释。Android 上编辑的是应用里的副本，原文件不变。
 - 数据库流量绑定到系统 VPN，Tailscale 内网转发可直接连通；连不上时自动重试一次并提示检查 VPN。
 - 后台保活双层保险：空闲会话每 90 秒心跳一次，断线后在下次执行前自动重连；Android 上以前台服务和常驻通知防止进程被系统回收。
 - 同一个库只保留一个会话，多个库之间用顶部胶囊切换，每个会话的对象树分开显示。
@@ -49,7 +53,7 @@
 ### 📝 SQL 编辑与执行
 
 - **Alt+X** 执行整个脚本，**Ctrl+Enter** 执行光标所在语句。
-- 脚本分隔：`;`、Oracle 单独一行的 `/`、SQL Server 的 `GO`、MySQL 的 `DELIMITER`，PL/SQL 与 T-SQL 过程体内的分号不会被拆开。
+- 脚本分隔：`;`、Oracle 单独一行的 `/`、SQL Server 的 `GO`、MySQL 的 `DELIMITER`，PL/SQL、T-SQL 过程体和 PostgreSQL `$$` 引号内的分号不会被拆开。
 - 可打开整个 `.sql` 文件（UTF-8 / GBK，最大 20 MB），也可把编辑器内容保存成文件。
 - INSERT、UPDATE、DELETE 和 DDL 默认先弹出确认。
 - 执行历史保留最近 100 条：点一条放回编辑器，长按多选删除，可一键清空。
@@ -65,13 +69,13 @@
 
 - 按库 / Schema / 表 / 视图 / 列浏览，显示表、视图和列的注释。
 - 长按表查看 DDL，长按 Schema 或数据库导出全部 DDL，按可重建顺序输出：序列、类型、表、索引、注释、外键、视图、函数、存储过程、包、触发器、同义词。
-- Oracle 使用 `DBMS_METADATA`，MySQL 使用 `SHOW CREATE`，SQL Server 从系统表生成，达梦优先用 `DBMS_METADATA`、其次 `TABLEDEF` / 数据字典；可复制、保存为 `.sql` 或放入编辑器。
+- Oracle 使用 `DBMS_METADATA`，MySQL / MariaDB 使用 `SHOW CREATE`，SQL Server 从系统表生成，PostgreSQL 由 `pg_catalog` 与 `pg_get_*def` 生成，SQLite 取 `sqlite_master` 中的原始建表语句，达梦优先用 `DBMS_METADATA`、其次 `TABLEDEF` / 数据字典；可复制、保存为 `.sql` 或放入编辑器。
 
 ### ✏️ 表数据与结构编辑
 
 - **编辑数据**：点单元格修改、设为 NULL，新增行（未填写的列使用默认值），长按选择行后删除。
 - 所有修改先预览生成的 SQL，再在一个事务中提交；任一条失败，或 UPDATE / DELETE 影响的行数不是 1，都会全部回滚。
-- 行定位使用 Oracle 的 `ROWID` 或主键（达梦、MySQL、SQL Server 按主键），值按列类型绑定参数执行；没有主键的表只能新增行。
+- 行定位使用 Oracle 的 `ROWID`、SQLite 无主键表的 `rowid` 或主键（达梦、MySQL、MariaDB、PostgreSQL、SQL Server、SQLite 按主键），值按列类型绑定参数执行；没有主键的表只能新增行。
 - **修改表结构**：新增列、修改列（名称、类型、可空、默认值、注释）、删除列、修改表注释，执行前显示各数据库对应的 DDL。
 - 只读连接不能进入编辑。
 
