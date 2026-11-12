@@ -8,7 +8,8 @@
 - 新增 MariaDB 连接类型（与 MySQL 共用 MariaDB Connector/J 和 `SHOW CREATE` DDL），默认端口 3306。
 - 新增 SQLite（xerial sqlite-jdbc，自带 SQLite 3.54）：桌面直接打开 / 新建文件，Android 通过系统文件选择器复制到应用私有目录后打开；无主键的表按 `rowid` 编辑；只读会话以只读方式打开文件；可导出整个库的 DDL。
 - SQL Server：支持命名实例（实例名字段）和「信任服务器证书」开关。
-- 连接编辑器的数据库类型改为两行；SQL 脚本识别 PostgreSQL 的 `$$` 美元引号，`DO` 块和函数体内的分号不再被拆开。
+- Android 上的下拉选择（设置里的外观 / 语言、Oracle 驱动、数据库类型）和对象树长按菜单改用 Halcyon 的 OS4 液态玻璃弹窗；页面上的弹窗模糊背后的页面，连接编辑器里的弹窗用不透明填充。桌面端不变。
+- 桌面端连接编辑器的数据库类型改为两行；Android 改为下拉选择；SQL 脚本识别 PostgreSQL 的 `$$` 美元引号，`DO` 块和函数体内的分号不再被拆开。
 
 
 English Changelog
@@ -19,7 +20,8 @@ English Changelog
 - New: a MariaDB connection type, sharing MariaDB Connector/J and the `SHOW CREATE` DDL with MySQL; default port 3306.
 - New: SQLite (xerial sqlite-jdbc with SQLite 3.54 built in). Desktop opens or creates the file in place; Android copies the file picked in the system picker into app storage and opens the copy. Tables without a primary key are edited by `rowid`, read-only sessions open the file read-only, and the whole database's DDL can be exported.
 - SQL Server: named instances (Instance field) and a Trust server certificate switch.
-- The database type picker in the connection editor now wraps onto two rows, and the script splitter understands PostgreSQL `$$` dollar quoting, so semicolons inside `DO` blocks and function bodies stay put.
+- Android dropdowns (Appearance and Language in Settings, the Oracle driver, the database type) and the object tree's long-press menu use Halcyon's OS4 liquid glass popups; popups on pages blur the page behind them, and those inside the connection editor use a solid fill. Desktop is unchanged.
+- The database type picker in the connection editor wraps onto two rows on desktop and is a dropdown on Android, and the script splitter understands PostgreSQL `$$` dollar quoting, so semicolons inside `DO` blocks and function bodies stay put.
 
 # 1.0.0
 

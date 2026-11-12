@@ -23,10 +23,6 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
-import top.yukonga.miuix.kmp.basic.DropdownImpl
-import top.yukonga.miuix.kmp.basic.ListPopupColumn
-import top.yukonga.miuix.kmp.basic.PopupPositionProvider
-import top.yukonga.miuix.kmp.window.WindowListPopup
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.horizontalScroll
@@ -331,26 +327,7 @@ private fun TreeRow(
             }
         }
         if (actions.isNotEmpty()) {
-            WindowListPopup(
-                show = menu,
-                alignment = PopupPositionProvider.Align.Start,
-                onDismissRequest = { menu = false },
-            ) {
-                ListPopupColumn {
-                    actions.forEachIndexed { index, (label, action) ->
-                        DropdownImpl(
-                            text = label,
-                            optionSize = actions.size,
-                            isSelected = false,
-                            index = index,
-                            onSelectedIndexChange = {
-                                menu = false
-                                action()
-                            },
-                        )
-                    }
-                }
-            }
+            AppActionMenu(show = menu, onDismissRequest = { menu = false }, actions = actions)
         }
     }
 }

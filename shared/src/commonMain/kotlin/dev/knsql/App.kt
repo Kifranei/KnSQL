@@ -138,7 +138,11 @@ fun App() {
                 // Pages draw edge to edge and are recorded into the backdrop; the floating glass bar
                 // refracts them. Scrolling pages pad their end by LocalBottomBarInset.
                 Box(Modifier.fillMaxSize()) {
-                    CompositionLocalProvider(LocalBottomBarInset provides barInset) {
+                    CompositionLocalProvider(
+                        LocalBottomBarInset provides barInset,
+                        // Dropdowns on these pages blur the recorded page layer.
+                        dev.knsql.ui.LocalGlassBackdrop provides backdrop,
+                    ) {
                         Box(Modifier.fillMaxSize().layerBackdrop(backdrop)) {
                             SectionBody(section, workbench, showAbout, { showAbout = it }, { section = it }, { overlay = it })
                         }

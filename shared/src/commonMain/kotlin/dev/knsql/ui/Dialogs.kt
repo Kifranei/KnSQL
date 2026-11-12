@@ -45,7 +45,6 @@ import top.yukonga.miuix.kmp.icon.extended.Hide
 import top.yukonga.miuix.kmp.icon.extended.Show
 import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.preference.SwitchPreference
-import top.yukonga.miuix.kmp.preference.WindowDropdownPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 sealed interface ActiveOverlay {
@@ -202,7 +201,22 @@ private fun ConnectionEditorDialog(
             modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Engine.entries.chunked(4).forEach { rowEngines ->
+            fun pickEngine(engine: Engine) {
+                val port = draft.port.toIntOrNull()
+                val replacePort = port == null || port == draft.engine.defaultPort
+                draft = draft.copy(
+                    engine = engine,
+                    port = if (replacePort) engine.defaultPort.toString() else draft.port,
+                )
+            }
+            if (engineDropdownPicker) {
+                AppDropdownPreference(
+                    items = Engine.entries.map { if (it == Engine.Dameng) tr("达梦") else it.label },
+                    selectedIndex = Engine.entries.indexOf(draft.engine),
+                    title = tr("数据库类型"),
+                    onSelectedIndexChange = { pickEngine(Engine.entries[it]) },
+                )
+            } else Engine.entries.chunked(4).forEach { rowEngines ->
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 rowEngines.forEach { engine ->
                     val selected = draft.engine == engine
@@ -213,14 +227,7 @@ private fun ConnectionEditorDialog(
                         else -> engine.label
                     }
                     Button(
-                        onClick = {
-                            val port = draft.port.toIntOrNull()
-                            val replacePort = port == null || port == draft.engine.defaultPort
-                            draft = draft.copy(
-                                engine = engine,
-                                port = if (replacePort) engine.defaultPort.toString() else draft.port,
-                            )
-                        },
+                        onClick = { pickEngine(engine) },
                         modifier = Modifier.weight(1f),
                         minWidth = 0.dp,
                         colors = if (selected) ButtonDefaults.buttonColorsPrimary() else ButtonDefaults.buttonColors(),
@@ -308,7 +315,7 @@ private fun ConnectionEditorDialog(
             }
             if (draft.engine == Engine.Oracle) {
                 SmallTitle(text = "Oracle")
-                WindowDropdownPreference(
+                AppDropdownPreference(
                     items = listOf(
                         tr("自动"),
                         "ojdbc 23 · 19c / 21c / 23ai", // i18n-ignore: driver and version names

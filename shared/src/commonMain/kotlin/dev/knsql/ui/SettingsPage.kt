@@ -23,7 +23,6 @@ import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
-import top.yukonga.miuix.kmp.preference.WindowDropdownPreference
 import dev.knsql.i18n.AppLanguage
 import dev.knsql.i18n.I18n
 import dev.knsql.i18n.LanguageSettings
@@ -61,7 +60,7 @@ fun SettingsPage(workbench: Workbench, showAbout: Boolean, onShowAbout: (Boolean
                 modifier = Modifier.padding(horizontal = 12.dp),
                 colors = cardColors,
             ) {
-                WindowDropdownPreference(
+                AppDropdownPreference(
                     items = listOf(tr("跟随系统"), tr("浅色"), tr("深色")),
                     selectedIndex = settings.colorMode.coerceIn(0, 2),
                     title = tr("外观"),
@@ -75,7 +74,7 @@ fun SettingsPage(workbench: Workbench, showAbout: Boolean, onShowAbout: (Boolean
                     summary = tr("竖屏时使用悬浮的液态玻璃导航栏；关闭时为高斯模糊底栏"),
                 )
                 // Language names are shown in their own language so anyone can find theirs.
-                WindowDropdownPreference(
+                AppDropdownPreference(
                     items = listOf(tr("跟随系统"), "简体中文", "繁體中文", "English"), // i18n-ignore: native names
                     selectedIndex = AppLanguage.entries.indexOf(language),
                     title = tr("语言"),

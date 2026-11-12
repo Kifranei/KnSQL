@@ -132,4 +132,5 @@ internal val dialogTexts = listOf<Text>(
     Text("请填写名称和数据库文件", "請填寫名稱和資料庫檔案", "Fill in a name and a database file"),
     Text("找不到数据库文件 {0}", "找不到資料庫檔案 {0}", "Database file {0} not found"),
     Text("数据库（留空为 postgres）", "資料庫（留空為 postgres）", "Database (postgres if empty)"),
+    Text("数据库类型", "資料庫類型", "Database type"),
 )
