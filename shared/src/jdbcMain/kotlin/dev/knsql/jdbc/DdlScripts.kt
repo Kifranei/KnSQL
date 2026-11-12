@@ -23,6 +23,7 @@ internal fun generateDdl(
     Engine.Oracle -> OracleDdl(connection, step).generate(node)
     Engine.MySql -> MySqlDdl(connection, step).generate(node)
     Engine.SqlServer -> SqlServerDdl(connection, step).generate(node)
+    Engine.Dameng -> DamengDdl(connection, step).generate(node)
 }
 
 private fun Connection.strings(sql: String, vararg binds: String): List<List<String?>> {
@@ -244,6 +245,158 @@ private class OracleDdl(private val connection: Connection, private val step: (S
 }
 
 // ---------------------------------------------------------------- MySQL / MariaDB
+
+// ---------------------------------------------------------------- Dameng (DM)
+
+/**
+ * DM 8 implements DBMS_METADATA; older or trimmed installs may not, so every object falls back to
+ * DM's own TABLEDEF, the Oracle-compatible ALL_VIEWS / ALL_SOURCE views, and finally to DDL built
+ * from JDBC metadata.
+ */
+private class DamengDdl(private val connection: Connection, private val step: (String) -> Unit) {
+    fun generate(node: MetaNode): String = when (node.kind) {
+        NodeKind.Table -> table(requireName(node.schema, tr("缺少 Schema")), requireName(node.relation, tr("缺少表名")))
+        NodeKind.View -> view(requireName(node.schema, tr("缺少 Schema")), requireName(node.relation, tr("缺少视图名")))
+        NodeKind.Schema -> schema(requireName(node.schema ?: node.label, tr("缺少 Schema")))
+        else -> error(tr("选择一个表、视图或 Schema"))
+    }
+
+    private fun quote(name: String) = "\"" + name.replace("\"", "\"\"") + "\""
+
+    private fun literal(text: String) = "'" + text.replace("'", "''") + "'"
+
+    private fun first(sql: String, vararg binds: String): String? = runCatching {
+        connection.strings(sql, *binds).firstOrNull()?.firstOrNull()?.trim()?.takeIf { it.isNotEmpty() }
+    }.getOrNull()
+
+    private fun metadata(type: String, owner: String, name: String): String? =
+        first("SELECT DBMS_METADATA.GET_DDL(?, ?, ?) FROM DUAL", type, name, owner)
+
+    private fun terminated(sql: String): String = sql.trim().let { if (it.endsWith(";") || it.endsWith("/")) it else "$it;" }
+
+    private fun table(owner: String, name: String): String {
+        step(tr("读取表 {0}.{1}", owner, name))
+        val ddl = metadata("TABLE", owner, name)
+            ?: first("SELECT TABLEDEF(?, ?) FROM DUAL", owner, name)
+            ?: built(owner, name)
+        val parts = mutableListOf(terminated(ddl))
+        if (!ddl.contains("COMMENT ON", ignoreCase = true)) parts += comments(owner, name)
+        return parts.filter { it.isNotBlank() }.joinToString("\n\n")
+    }
+
+    /** CREATE TABLE from JDBC metadata, when the server offers no DDL function. */
+    private fun built(owner: String, name: String): String {
+        val structure = loadStructure(Engine.Dameng, connection, dev.knsql.model.TableRef(null, owner, name))
+        val lines = structure.columns.map { column ->
+            buildString {
+                append("    ").append(quote(column.name)).append(' ').append(column.type)
+                if (column.autoIncrement) append(" IDENTITY(1, 1)")
+                column.defaultValue?.let { append(" DEFAULT ").append(it) }
+                if (!column.nullable) append(" NOT NULL")
+            }
+        }.toMutableList()
+        val keys = structure.columns.filter { it.primaryKey }.map { quote(it.name) }
+        if (keys.isNotEmpty()) lines += "    PRIMARY KEY (" + keys.joinToString(", ") + ")"
+        return "CREATE TABLE ${quote(owner)}.${quote(name)}\n(\n" + lines.joinToString(",\n") + "\n);"
+    }
+
+    private fun comments(owner: String, table: String): List<String> {
+        val target = "${quote(owner)}.${quote(table)}"
+        val output = mutableListOf<String>()
+        first("SELECT COMMENTS FROM ALL_TAB_COMMENTS WHERE OWNER = ? AND TABLE_NAME = ?", owner, table)?.let {
+            output += "COMMENT ON TABLE $target IS ${literal(it)};"
+        }
+        runCatching {
+            connection.strings(
+                "SELECT COLUMN_NAME, COMMENTS FROM ALL_COL_COMMENTS WHERE OWNER = ? AND TABLE_NAME = ? AND COMMENTS IS NOT NULL",
+                owner, table,
+            )
+        }.getOrDefault(emptyList()).forEach { row ->
+            val column = row[0] ?: return@forEach
+            val text = row[1]?.takeIf { it.isNotBlank() } ?: return@forEach
+            output += "COMMENT ON COLUMN $target.${quote(column)} IS ${literal(text)};"
+        }
+        return output
+    }
+
+    private fun view(owner: String, name: String): String {
+        step(tr("读取视图 {0}.{1}", owner, name))
+        val text = metadata("VIEW", owner, name)
+            ?: first("SELECT TEXT FROM ALL_VIEWS WHERE OWNER = ? AND VIEW_NAME = ?", owner, name)?.let { body ->
+                if (body.startsWith("CREATE", ignoreCase = true)) body
+                else "CREATE OR REPLACE VIEW ${quote(owner)}.${quote(name)} AS\n$body"
+            }
+            ?: return "-- ${tr("无法导出 {0} {1}.{2}：{3}", "VIEW", owner, name, "DBMS_METADATA / ALL_VIEWS")}"
+        return terminated(text)
+    }
+
+    /** Functions, procedures, packages and triggers: DBMS_METADATA, else the source lines. */
+    private fun source(type: String, owner: String, name: String): String {
+        metadata(type.replace(' ', '_'), owner, name)?.let { return terminated(it) + "\n/" }
+        val lines = runCatching {
+            connection.strings(
+                "SELECT TEXT FROM ALL_SOURCE WHERE OWNER = ? AND NAME = ? AND TYPE = ? ORDER BY LINE",
+                owner, name, type,
+            ).mapNotNull { it[0] }
+        }.getOrDefault(emptyList())
+        if (lines.isEmpty()) return "-- ${tr("无法导出 {0} {1}.{2}：{3}", type, owner, name, "ALL_SOURCE")}"
+        val body = lines.joinToString("") { if (it.endsWith("\n")) it else it + "\n" }.trim()
+        val create = if (body.startsWith("CREATE", ignoreCase = true)) body else "CREATE OR REPLACE $body"
+        return "$create\n/"
+    }
+
+    private fun schema(owner: String): String {
+        val out = StringBuilder()
+        step(tr("列出 {0} 的对象", owner))
+        val objects = runCatching {
+            connection.strings(
+                "SELECT OBJECT_TYPE, OBJECT_NAME FROM ALL_OBJECTS WHERE OWNER = ? ORDER BY OBJECT_TYPE, OBJECT_NAME",
+                owner,
+            )
+        }.getOrDefault(emptyList())
+        fun names(type: String) = objects.filter { it[0].equals(type, true) }.mapNotNull { it[1] }
+        val tables = names("TABLE").ifEmpty {
+            val found = mutableListOf<String>()
+            connection.metaData.getTables(null, owner, "%", arrayOf("TABLE")).use { set ->
+                while (set.next()) set.getString("TABLE_NAME")?.let(found::add)
+            }
+            found
+        }
+        val views = names("VIEW").ifEmpty {
+            val found = mutableListOf<String>()
+            connection.metaData.getTables(null, owner, "%", arrayOf("VIEW")).use { set ->
+                while (set.next()) set.getString("TABLE_NAME")?.let(found::add)
+            }
+            found
+        }
+
+        fun emit(title: String, items: List<String>, render: (String) -> String) {
+            if (items.isEmpty()) return
+            out.append(section(tr("{0}（{1}）", title, items.size)))
+            items.forEachIndexed { index, item ->
+                step("$title $index/${items.size}")
+                val ddl = try {
+                    render(item)
+                } catch (error: SQLException) {
+                    "-- ${tr("无法导出 {0} {1}.{2}：{3}", title, owner, item, error.brief())}"
+                }
+                out.append(ddl.trim()).append("\n\n")
+            }
+        }
+
+        emit(tr("序列"), names("SEQUENCE")) { name ->
+            metadata("SEQUENCE", owner, name)?.let(::terminated) ?: "CREATE SEQUENCE ${quote(owner)}.${quote(name)};"
+        }
+        emit(trc("ddl", "表"), tables) { table(owner, it) }
+        emit(trc("ddl", "视图"), views) { view(owner, it) }
+        emit(tr("函数"), names("FUNCTION")) { source("FUNCTION", owner, it) }
+        emit(tr("存储过程"), names("PROCEDURE")) { source("PROCEDURE", owner, it) }
+        emit(tr("包"), names("PACKAGE")) { source("PACKAGE", owner, it) }
+        emit(tr("触发器"), names("TRIGGER")) { source("TRIGGER", owner, it) }
+        if (out.isEmpty()) return "-- ${tr("{0} 下没有可导出的对象，或者当前账号没有查看权限。", owner)}"
+        return out.toString().trim()
+    }
+}
 
 private class MySqlDdl(private val connection: Connection, private val step: (String) -> Unit) {
     fun generate(node: MetaNode): String {

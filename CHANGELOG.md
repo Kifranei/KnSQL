@@ -1,3 +1,15 @@
+# Unreleased
+
+中文更新日志
+- Oracle 支持扩展到 11g R2、12c、18c：在 ojdbc 23 之外内置 ojdbc 19（重定位到 `dev.knsql.ojdbc19`），连接里可选「自动 / ojdbc 23 / ojdbc 19」；预览与表数据编辑改用 `ROWNUM`，11g 也能用。
+- MySQL：支持 MySQL 8.x 默认的 `caching_sha2_password`（无 TLS 时自动获取公钥），新增「加密连接」开关。
+- 新增达梦 DM7 / DM8：对象树、注释、DDL 导出、表数据与结构编辑，默认端口 5236。
+
+English Changelog
+- Oracle now also covers 11g R2, 12c and 18c: ojdbc 19 ships next to ojdbc 23 (relocated to `dev.knsql.ojdbc19`), selectable per connection as Auto / ojdbc 23 / ojdbc 19. Previews and data editing use `ROWNUM`, so they work on 11g.
+- MySQL: MySQL 8.x's default `caching_sha2_password` works without TLS (public key retrieval), and a new Encrypt connection switch enables TLS.
+- New: Dameng DM7 / DM8 with the object tree, comments, DDL export and table data / structure editing; default port 5236.
+
 # 1.0.0
 
 First release.

@@ -91,4 +91,25 @@ class TableEditsTest {
         assertTrue(ddl[0].contains("sys.default_constraints"))
         assertEquals("ALTER TABLE [dbo].[T] DROP COLUMN [NAME]", ddl[1])
     }
+
+    @Test
+    fun damengUsesPrimaryKeyAndOracleSyntax() {
+        val s = structure(Engine.Dameng, TableRef(null, "SYSDBA", "T"))
+        val data = EditableData(s, keyNames = listOf("ID"), rows = listOf(EditableRow(listOf("1"), listOf("1", "a"))), truncated = false)
+        val statements = buildDataChanges(data, PendingChanges(edits = mapOf(0 to mapOf(1 to "b"))))
+        assertEquals("UPDATE \"SYSDBA\".\"T\" SET \"NAME\" = ? WHERE \"ID\" = ?", statements.single().sql)
+        assertEquals(
+            listOf(
+                "ALTER TABLE \"SYSDBA\".\"T\" ADD (\"CODE\" VARCHAR(20) NOT NULL)",
+                "COMMENT ON COLUMN \"SYSDBA\".\"T\".\"CODE\" IS '编码'",
+            ),
+            addColumnDdl(s, ColumnSpec("CODE", "VARCHAR(20)", false, null, "编码")),
+        )
+    }
+
+    @Test
+    fun previewsWorkOnOldOracleAndDameng() {
+        assertEquals("SELECT * FROM \"HR\".\"EMP\" WHERE ROWNUM <= 200", dev.knsql.model.previewSql(Engine.Oracle, null, "HR", "EMP"))
+        assertEquals("SELECT * FROM \"SYSDBA\".\"EMP\" LIMIT 200", dev.knsql.model.previewSql(Engine.Dameng, null, "SYSDBA", "EMP"))
+    }
 }

@@ -206,6 +206,7 @@ private fun ColumnDialog(
         Engine.Oracle -> "VARCHAR2(50 CHAR) · NUMBER(10,2) · DATE"
         Engine.MySql -> "varchar(50) · int · decimal(10,2) · datetime"
         Engine.SqlServer -> "nvarchar(50) · int · decimal(10,2) · datetime2(0)"
+        Engine.Dameng -> "VARCHAR(50) · INT · DECIMAL(10,2) · TIMESTAMP"
     }
     OverlayDialog(
         show = true,

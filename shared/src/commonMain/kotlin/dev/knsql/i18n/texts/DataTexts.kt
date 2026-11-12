@@ -51,7 +51,9 @@ internal val dataTexts = listOf<Text>(
     // JDBC client
     Text("连接已关闭", "連線已關閉", "Connection is closed"),
     Text("另一种方式 {0} 也失败：{1}", "另一種方式 {0} 也失敗：{1}", "Alternative URL {0} also failed: {1}"),
-    Text("Oracle 驱动没有在这台设备上加载成功。{0}", "Oracle 驅動程式無法在這台裝置上載入。{0}", "The Oracle driver failed to load on this device. {0}"),
+    Text("{0} 驱动没有在这台设备上加载成功。{1}", "{0} 驅動程式無法在這台裝置上載入。{1}", "The {0} driver could not be loaded on this device. {1}"),
+    Text("改用 ojdbc 19 也失败：{0}", "改用 ojdbc 19 也失敗：{0}", "Retrying with ojdbc 19 also failed: {0}"),
+    Text("驱动不接受地址 {0}", "驅動程式不接受位址 {0}", "The driver does not accept the URL {0}"),
 
     // SQL files
     Text("文件超过 20MB", "檔案超過 20MB", "File exceeds 20 MB"),

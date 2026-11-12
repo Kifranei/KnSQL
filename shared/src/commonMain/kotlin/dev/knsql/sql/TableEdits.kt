@@ -13,7 +13,7 @@ import dev.knsql.model.ValueKind
 // ---------------------------------------------------------------- quoting
 
 fun quoteIdentifier(engine: Engine, name: String): String = when (engine) {
-    Engine.Oracle -> "\"" + name.replace("\"", "\"\"") + "\""
+    Engine.Oracle, Engine.Dameng -> "\"" + name.replace("\"", "\"\"") + "\""
     Engine.MySql -> "`" + name.replace("`", "``") + "`"
     Engine.SqlServer -> "[" + name.replace("]", "]]") + "]"
 }
@@ -21,7 +21,7 @@ fun quoteIdentifier(engine: Engine, name: String): String = when (engine) {
 /** Fully qualified table name. The structure must already be resolved (owner / database / schema set). */
 fun qualifiedTable(engine: Engine, table: TableRef): String {
     val parts = when (engine) {
-        Engine.Oracle -> listOfNotNull(table.schema, table.name)
+        Engine.Oracle, Engine.Dameng -> listOfNotNull(table.schema, table.name)
         Engine.MySql -> listOfNotNull(table.catalog ?: table.schema, table.name)
         Engine.SqlServer -> listOfNotNull(table.catalog, table.schema ?: "dbo", table.name)
     }
@@ -29,7 +29,7 @@ fun qualifiedTable(engine: Engine, table: TableRef): String {
 }
 
 fun stringLiteral(engine: Engine, text: String): String = when (engine) {
-    Engine.Oracle -> "'" + text.replace("'", "''") + "'"
+    Engine.Oracle, Engine.Dameng -> "'" + text.replace("'", "''") + "'"
     Engine.MySql -> "'" + text.replace("\\", "\\\\").replace("'", "''") + "'"
     Engine.SqlServer -> "N'" + text.replace("'", "''") + "'"
 }
@@ -40,8 +40,8 @@ fun previewLiteral(engine: Engine, value: BindValue): String {
     return when (value.kind) {
         ValueKind.Number -> if (text.trim().toDoubleOrNull() != null) text.trim() else stringLiteral(engine, text)
         ValueKind.Boolean -> text.trim()
-        ValueKind.DateTime -> if (engine == Engine.Oracle) "TIMESTAMP " + stringLiteral(engine, text.trim()) else stringLiteral(engine, text.trim())
-        ValueKind.Date -> if (engine == Engine.Oracle) "DATE " + stringLiteral(engine, text.trim().take(10)) else stringLiteral(engine, text.trim())
+        ValueKind.DateTime -> if (engine.oracleLike) "TIMESTAMP " + stringLiteral(engine, text.trim()) else stringLiteral(engine, text.trim())
+        ValueKind.Date -> if (engine.oracleLike) "DATE " + stringLiteral(engine, text.trim().take(10)) else stringLiteral(engine, text.trim())
         else -> stringLiteral(engine, text)
     }
 }
@@ -175,7 +175,7 @@ fun addColumnDdl(structure: TableStructure, spec: ColumnSpec): List<String> {
     val table = qualifiedTable(engine, structure.table)
     val name = quoteIdentifier(engine, spec.name)
     return when (engine) {
-        Engine.Oracle -> listOfNotNull(
+        Engine.Oracle, Engine.Dameng -> listOfNotNull(
             "ALTER TABLE $table ADD ($name ${spec.type.trim()}${defaultClause(spec.defaultValue)}" +
                 (if (spec.nullable) "" else " NOT NULL") + ")",
             spec.comment?.takeIf { it.isNotEmpty() }?.let { "COMMENT ON COLUMN $table.$name IS ${stringLiteral(engine, it)}" },
@@ -207,7 +207,7 @@ fun alterColumnDdl(structure: TableStructure, old: ColumnInfo, spec: ColumnSpec)
     val name = quoteIdentifier(engine, spec.name)
     val out = mutableListOf<String>()
     when (engine) {
-        Engine.Oracle -> {
+        Engine.Oracle, Engine.Dameng -> {
             if (renamed) out += "ALTER TABLE $table RENAME COLUMN ${quoteIdentifier(engine, old.name)} TO $name"
             if (typeChanged || nullChanged || defaultChanged) {
                 val parts = buildString {
@@ -252,7 +252,7 @@ fun dropColumnDdl(structure: TableStructure, column: String): List<String> {
     val table = qualifiedTable(engine, structure.table)
     val name = quoteIdentifier(engine, column)
     return when (engine) {
-        Engine.Oracle, Engine.MySql -> listOf("ALTER TABLE $table DROP COLUMN $name")
+        Engine.Oracle, Engine.Dameng, Engine.MySql -> listOf("ALTER TABLE $table DROP COLUMN $name")
         Engine.SqlServer -> listOf(
             sqlServerDropDefault(structure.table, column),
             "ALTER TABLE ${sqlServerObject(structure.table)} DROP COLUMN $name",
@@ -265,7 +265,7 @@ fun tableCommentDdl(structure: TableStructure, comment: String?): List<String> {
     val table = qualifiedTable(engine, structure.table)
     val text = comment?.takeIf { it.isNotEmpty() }
     return when (engine) {
-        Engine.Oracle -> listOf("COMMENT ON TABLE $table IS ${stringLiteral(engine, text.orEmpty())}")
+        Engine.Oracle, Engine.Dameng -> listOf("COMMENT ON TABLE $table IS ${stringLiteral(engine, text.orEmpty())}")
         Engine.MySql -> listOf("ALTER TABLE $table COMMENT = ${stringLiteral(engine, text.orEmpty())}")
         Engine.SqlServer -> listOf(sqlServerComment(structure.table, null, text))
     }

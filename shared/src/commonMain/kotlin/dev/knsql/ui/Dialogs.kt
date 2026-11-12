@@ -29,6 +29,7 @@ import dev.knsql.data.Workbench
 import dev.knsql.i18n.tr
 import dev.knsql.model.ConnectionDraft
 import dev.knsql.model.Engine
+import dev.knsql.model.OracleDriver
 import dev.knsql.model.toDraft
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
@@ -43,6 +44,7 @@ import top.yukonga.miuix.kmp.icon.extended.Hide
 import top.yukonga.miuix.kmp.icon.extended.Show
 import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.preference.SwitchPreference
+import top.yukonga.miuix.kmp.preference.WindowDropdownPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 sealed interface ActiveOverlay {
@@ -201,7 +203,11 @@ private fun ConnectionEditorDialog(
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Engine.entries.forEach { engine ->
                     val selected = draft.engine == engine
-                    val label = if (engine == Engine.SqlServer) "MSSQL" else engine.label
+                    val label = when (engine) {
+                        Engine.SqlServer -> "MSSQL"
+                        Engine.Dameng -> tr("达梦")
+                        else -> engine.label
+                    }
                     Button(
                         onClick = {
                             val port = draft.port.toIntOrNull()
@@ -229,7 +235,11 @@ private fun ConnectionEditorDialog(
             TextField(
                 value = draft.database,
                 onValueChange = { draft = draft.copy(database = it) },
-                label = if (draft.engine == Engine.Oracle) tr("服务名或 SID") else tr("数据库"),
+                label = when (draft.engine) {
+                    Engine.Oracle -> tr("服务名或 SID")
+                    Engine.Dameng -> tr("模式（可留空）")
+                    else -> tr("数据库")
+                },
                 singleLine = true,
             )
             TextField(value = draft.username, onValueChange = { draft = draft.copy(username = it) }, label = tr("用户名"), singleLine = true)
@@ -252,12 +262,23 @@ private fun ConnectionEditorDialog(
                 },
             )
             if (draft.engine == Engine.Oracle) {
-                SmallTitle(text = "Oracle 19c")
+                SmallTitle(text = "Oracle")
+                WindowDropdownPreference(
+                    items = listOf(
+                        tr("自动"),
+                        "ojdbc 23 · 19c / 21c / 23ai", // i18n-ignore: driver and version names
+                        "ojdbc 19 · 11g R2 / 12c / 18c", // i18n-ignore: driver and version names
+                    ),
+                    selectedIndex = OracleDriver.entries.indexOf(draft.oracleDriver),
+                    title = tr("驱动"),
+                    summary = tr("自动：先用 ojdbc 23，服务器低于 19c 或 ojdbc 23 连不上时改用 ojdbc 19。"),
+                    onSelectedIndexChange = { index -> draft = draft.copy(oracleDriver = OracleDriver.entries[index]) },
+                )
                 SwitchPreference(
                     checked = draft.oracleSid,
                     onCheckedChange = { draft = draft.copy(oracleSid = it) },
                     title = tr("使用 SID"),
-                    summary = tr("关闭时按服务名连接，19c 通常用服务名。"),
+                    summary = tr("关闭时按服务名连接；11g 及更早的库常用 SID。连不上时会自动换另一种方式。"),
                 )
                 SwitchPreference(
                     checked = draft.sysdba,
@@ -266,7 +287,7 @@ private fun ConnectionEditorDialog(
                     summary = tr("以 SYSDBA 身份登录。"),
                 )
             }
-            if (draft.engine == Engine.SqlServer) {
+            if (draft.engine == Engine.SqlServer || draft.engine == Engine.MySql) {
                 SwitchPreference(
                     checked = draft.encrypt,
                     onCheckedChange = { draft = draft.copy(encrypt = it) },

@@ -177,6 +177,7 @@ class Workbench(
             port = port,
             database = draft.database.trim(),
             oracleSid = draft.oracleSid,
+            oracleDriver = draft.oracleDriver,
             username = draft.username.trim(),
             passwordCipher = password,
             sysdba = draft.sysdba,
@@ -731,7 +732,7 @@ fun newId(): String = kotlin.random.Random.nextBytes(16).joinToString("") { byte
 private val defaultQueries = setOf("SELECT 1", "SELECT 1 FROM DUAL")
 
 private fun defaultQuery(engine: Engine): String =
-    if (engine == Engine.Oracle) "SELECT 1 FROM DUAL" else "SELECT 1"
+    if (engine.oracleLike) "SELECT 1 FROM DUAL" else "SELECT 1"
 
 private fun formatSize(chars: Int): String = when {
     chars >= 1_048_576 -> tr("{0} M 字符", (chars / 104_857.6).toInt() / 10.0)

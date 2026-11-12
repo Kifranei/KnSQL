@@ -35,12 +35,18 @@ private fun Connection.rows(sql: String, vararg binds: String?): List<List<Strin
     }
 }
 
+/** Connection.getSchema() by reflection: Android's java.sql predates JDBC 4.1 and doesn't declare it. */
+internal fun sessionSchema(connection: Connection): String? = runCatching {
+    connection.javaClass.getMethod("getSchema").invoke(connection) as String?
+}.getOrNull()?.takeIf { it.isNotBlank() }
+
 private fun Connection.single(sql: String): String? = rows(sql).firstOrNull()?.firstOrNull()
 
 internal fun loadStructure(engine: Engine, connection: Connection, table: TableRef): TableStructure = when (engine) {
     Engine.Oracle -> oracleStructure(connection, table)
     Engine.MySql -> mysqlStructure(connection, table)
     Engine.SqlServer -> sqlServerStructure(connection, table)
+    Engine.Dameng -> damengStructure(connection, table)
 }
 
 // ---------------------------------------------------------------- Oracle
@@ -72,10 +78,16 @@ private fun oracleStructure(connection: Connection, table: TableRef): TableStruc
         owner, name,
     ).mapNotNull { it[0] }.toSet()
     val columns = mutableListOf<ColumnInfo>()
+    // IDENTITY_COLUMN arrived in 12c; 11g has no identity columns at all.
+    val identityColumn = if (runCatching { connection.metaData.databaseMajorVersion }.getOrDefault(19) >= 12) {
+        "t.IDENTITY_COLUMN"
+    } else {
+        "'NO'"
+    }
     connection.prepareStatement(
         // DATA_DEFAULT is a LONG, which Oracle streams: it has to be read last and in column order.
         "SELECT t.COLUMN_NAME, t.DATA_TYPE, t.DATA_LENGTH, t.CHAR_LENGTH, t.CHAR_USED, t.DATA_PRECISION, " +
-            "t.DATA_SCALE, t.NULLABLE, c.COMMENTS, t.VIRTUAL_COLUMN, t.IDENTITY_COLUMN, t.DATA_DEFAULT " +
+            "t.DATA_SCALE, t.NULLABLE, c.COMMENTS, t.VIRTUAL_COLUMN, $identityColumn, t.DATA_DEFAULT " +
             "FROM ALL_TAB_COLS t LEFT JOIN ALL_COL_COMMENTS c " +
             "ON c.OWNER = t.OWNER AND c.TABLE_NAME = t.TABLE_NAME AND c.COLUMN_NAME = t.COLUMN_NAME " +
             "WHERE t.OWNER = ? AND t.TABLE_NAME = ? AND t.HIDDEN_COLUMN = 'NO' ORDER BY t.COLUMN_ID",
@@ -263,6 +275,104 @@ private fun sqlServerStructure(connection: Connection, table: TableRef): TableSt
     return TableStructure(Engine.SqlServer, TableRef(database, schema, name), columns, comment)
 }
 
+// ---------------------------------------------------------------- Dameng
+
+private fun damengKind(type: String): ValueKind {
+    val t = type.uppercase().substringBefore('(').trim()
+    return when {
+        t in setOf("NUMBER", "NUMERIC", "DECIMAL", "DEC", "INT", "INTEGER", "BIGINT", "SMALLINT", "TINYINT", "BYTE",
+            "FLOAT", "DOUBLE", "DOUBLE PRECISION", "REAL", "PLS_INTEGER") -> ValueKind.Number
+        t == "DATE" -> ValueKind.Date
+        t == "TIME" || t.startsWith("TIME WITH") -> ValueKind.Time
+        t == "DATETIME" || t.startsWith("TIMESTAMP") || t.startsWith("DATETIME WITH") -> ValueKind.DateTime
+        t == "BIT" || t == "BOOLEAN" || t == "BOOL" -> ValueKind.Boolean
+        t == "CLOB" || t == "TEXT" || t == "LONGVARCHAR" || t == "NCLOB" -> ValueKind.Lob
+        t == "BLOB" || t == "IMAGE" || t == "LONGVARBINARY" || t == "BINARY" || t == "VARBINARY" || t == "BFILE" -> ValueKind.Binary
+        else -> ValueKind.Text
+    }
+}
+
+private fun damengType(type: String, size: Int, scale: Int?): String {
+    val t = type.uppercase()
+    return when (t) {
+        "CHAR", "CHARACTER", "VARCHAR", "VARCHAR2", "NCHAR", "NVARCHAR", "NVARCHAR2", "BINARY", "VARBINARY", "RAW" ->
+            if (size > 0) "$t($size)" else t
+        "NUMBER", "NUMERIC", "DECIMAL", "DEC" -> when {
+            size <= 0 -> t
+            scale == null || scale == 0 -> "$t($size)"
+            else -> "$t($size,$scale)"
+        }
+        else -> t
+    }
+}
+
+/**
+ * DM tables through JDBC metadata, which the DM driver fills in fully (types, defaults, REMARKS,
+ * primary keys) and which doesn't depend on how closely a DM release mirrors Oracle's dictionary.
+ */
+private fun damengStructure(connection: Connection, table: TableRef): TableStructure {
+    val meta = connection.metaData
+    val wanted = table.schema
+        ?: runCatching { connection.single("SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL") }.getOrNull()
+        ?: sessionSchema(connection)
+    var found: Pair<String, String>? = null
+    var comment: String? = null
+    for (schema in listOfNotNull(wanted, wanted?.uppercase()).distinct()) {
+        for (name in listOf(table.name, table.name.uppercase()).distinct()) {
+            meta.getTables(null, schema, name, arrayOf("TABLE")).use { set ->
+                if (found == null && set.next()) {
+                    found = (set.getString("TABLE_SCHEM") ?: schema) to (set.getString("TABLE_NAME") ?: name)
+                    comment = runCatching { set.getString("REMARKS") }.getOrNull()?.takeIf { it.isNotBlank() }
+                }
+            }
+        }
+    }
+    val (owner, name) = found ?: throw SQLException(tr("找不到表 {0}，或者没有权限修改它", table.name))
+    val keys = mutableSetOf<String>()
+    meta.getPrimaryKeys(null, owner, name).use { set ->
+        while (set.next()) set.getString("COLUMN_NAME")?.let(keys::add)
+    }
+    val columns = mutableListOf<ColumnInfo>()
+    meta.getColumns(null, owner, name, "%").use { set ->
+        while (set.next()) {
+            val column = set.getString("COLUMN_NAME") ?: continue
+            val typeName = set.getString("TYPE_NAME").orEmpty()
+            val size = set.getInt("COLUMN_SIZE")
+            val scale = set.getInt("DECIMAL_DIGITS").let { if (set.wasNull()) null else it }
+            val autoIncrement = runCatching { set.getString("IS_AUTOINCREMENT") }.getOrNull() == "YES"
+            val generated = runCatching { set.getString("IS_GENERATEDCOLUMN") }.getOrNull() == "YES"
+            columns += ColumnInfo(
+                name = column,
+                type = damengType(typeName, size, scale),
+                kind = damengKind(typeName),
+                nullable = set.getInt("NULLABLE") != java.sql.DatabaseMetaData.columnNoNulls,
+                defaultValue = runCatching { set.getString("COLUMN_DEF") }.getOrNull()?.trim()
+                    ?.takeIf { it.isNotEmpty() && !it.equals("NULL", true) && !autoIncrement },
+                comment = runCatching { set.getString("REMARKS") }.getOrNull()?.takeIf { it.isNotBlank() },
+                primaryKey = column in keys,
+                autoIncrement = autoIncrement,
+                generated = generated,
+            )
+        }
+    }
+    if (columns.none { it.comment != null }) {
+        val remarks = runCatching {
+            connection.rows(
+                "SELECT COLUMN_NAME, COMMENTS FROM ALL_COL_COMMENTS WHERE OWNER = ? AND TABLE_NAME = ? AND COMMENTS IS NOT NULL",
+                owner, name,
+            ).mapNotNull { row -> row[0]?.let { it to row[1] } }.toMap()
+        }.getOrDefault(emptyMap())
+        if (remarks.isNotEmpty()) columns.replaceAll { it.copy(comment = remarks[it.name]?.takeIf { c -> c.isNotBlank() }) }
+    }
+    if (comment == null) {
+        comment = runCatching {
+            connection.rows("SELECT COMMENTS FROM ALL_TAB_COMMENTS WHERE OWNER = ? AND TABLE_NAME = ?", owner, name)
+                .firstOrNull()?.firstOrNull()?.takeIf { it.isNotBlank() }
+        }.getOrNull()
+    }
+    return TableStructure(Engine.Dameng, TableRef(null, owner, name), columns, comment)
+}
+
 // ---------------------------------------------------------------- rows for editing
 
 internal fun loadEditableRows(connection: Connection, structure: TableStructure, maxRows: Int): EditableData {
@@ -273,8 +383,9 @@ internal fun loadEditableRows(connection: Connection, structure: TableStructure,
     val keyNames = if (engine == Engine.Oracle) listOf("ROWID") else structure.keyColumns
     val limit = maxRows > 0
     val sql = when (engine) {
-        Engine.Oracle -> "SELECT ROWIDTOCHAR(t.ROWID), $list FROM $table t" + if (limit) " FETCH FIRST ${maxRows + 1} ROWS ONLY" else ""
-        Engine.MySql -> "SELECT $list FROM $table t" + if (limit) " LIMIT ${maxRows + 1}" else ""
+        // ROWNUM works on every Oracle release; FETCH FIRST needs 12c.
+        Engine.Oracle -> "SELECT ROWIDTOCHAR(t.ROWID), $list FROM $table t" + if (limit) " WHERE ROWNUM <= ${maxRows + 1}" else ""
+        Engine.MySql, Engine.Dameng -> "SELECT $list FROM $table t" + if (limit) " LIMIT ${maxRows + 1}" else ""
         Engine.SqlServer -> "SELECT " + (if (limit) "TOP (${maxRows + 1}) " else "") + "$list FROM $table t"
     }
     val offset = if (engine == Engine.Oracle) 2 else 1

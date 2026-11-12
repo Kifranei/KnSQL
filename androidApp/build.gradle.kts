@@ -56,6 +56,8 @@ android {
     packaging {
         resources {
             pickFirsts += "META-INF/services/java.sql.Driver"
+            // ojdbc 23, ojdbc 19 and the DM driver each ship their licence here; keep all three.
+            merges += "META-INF/license.txt"
             excludes += setOf(
                 "META-INF/LICENSE",
                 "META-INF/LICENSE.md",

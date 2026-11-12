@@ -7,6 +7,7 @@ enum class Engine {
     Oracle,
     MySql,
     SqlServer,
+    Dameng,
     ;
 
     val label: String
@@ -14,6 +15,7 @@ enum class Engine {
             Oracle -> "Oracle"
             MySql -> "MySQL"
             SqlServer -> "SQL Server"
+            Dameng -> "DM"
         }
 
     val defaultPort: Int
@@ -21,7 +23,23 @@ enum class Engine {
             Oracle -> 1521
             MySql -> 3306
             SqlServer -> 1433
+            Dameng -> 5236
         }
+
+    /** Oracle-compatible SQL: double-quoted names, schema.table, COMMENT ON, ALTER TABLE ... MODIFY, DUAL. */
+    val oracleLike: Boolean
+        get() = this == Oracle || this == Dameng
+}
+
+/** Which Oracle JDBC driver a connection uses. */
+@Serializable
+enum class OracleDriver {
+    /** ojdbc 23 for 19c and newer, ojdbc 19 when the server is older or ojdbc 23 can't log in. */
+    Auto,
+    /** ojdbc 23: Oracle 19c, 21c, 23ai / 26ai. */
+    Modern,
+    /** ojdbc 19: Oracle 11g R2, 12c, 18c (and newer). */
+    Legacy,
 }
 
 @Serializable
@@ -33,6 +51,7 @@ data class SavedConnection(
     val port: Int,
     val database: String = "",
     val oracleSid: Boolean = false,
+    val oracleDriver: OracleDriver = OracleDriver.Auto,
     val username: String = "",
     val passwordCipher: String = "",
     val sysdba: Boolean = false,
@@ -112,6 +131,7 @@ data class ConnectionDraft(
     val port: String = Engine.Oracle.defaultPort.toString(),
     val database: String = "",
     val oracleSid: Boolean = false,
+    val oracleDriver: OracleDriver = OracleDriver.Auto,
     val username: String = "",
     val password: String = "",
     val sysdba: Boolean = false,
@@ -128,6 +148,7 @@ fun SavedConnection.toDraft(password: String): ConnectionDraft = ConnectionDraft
     port = port.toString(),
     database = database,
     oracleSid = oracleSid,
+    oracleDriver = oracleDriver,
     username = username,
     password = password,
     sysdba = sysdba,
@@ -139,7 +160,7 @@ fun SavedConnection.toDraft(password: String): ConnectionDraft = ConnectionDraft
 fun quoteIdent(engine: Engine, name: String): String = when (engine) {
     Engine.MySql -> "`${name.replace("`", "``")}`"
     Engine.SqlServer -> "[${name.replace("]", "]]")}]"
-    Engine.Oracle -> "\"${name.replace("\"", "\"\"")}\""
+    Engine.Oracle, Engine.Dameng -> "\"${name.replace("\"", "\"\"")}\""
 }
 
 fun qualifiedName(engine: Engine, catalog: String?, schema: String?, relation: String): String {
@@ -150,7 +171,7 @@ fun qualifiedName(engine: Engine, catalog: String?, schema: String?, relation: S
             schema?.takeIf { it.isNotBlank() },
             relation,
         )
-        Engine.Oracle -> listOfNotNull(schema?.takeIf { it.isNotBlank() }, relation)
+        Engine.Oracle, Engine.Dameng -> listOfNotNull(schema?.takeIf { it.isNotBlank() }, relation)
     }
     return parts.joinToString(".") { quoteIdent(engine, it) }
 }
@@ -160,6 +181,8 @@ fun previewSql(engine: Engine, catalog: String?, schema: String?, relation: Stri
     return when (engine) {
         Engine.MySql -> "SELECT * FROM $name LIMIT 200"
         Engine.SqlServer -> "SELECT TOP 200 * FROM $name"
-        Engine.Oracle -> "SELECT * FROM $name FETCH FIRST 200 ROWS ONLY"
+        // ROWNUM rather than FETCH FIRST: Oracle 11g has no row-limiting clause.
+        Engine.Oracle -> "SELECT * FROM $name WHERE ROWNUM <= 200"
+        Engine.Dameng -> "SELECT * FROM $name LIMIT 200"
     }
 }

@@ -4,34 +4,53 @@ import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.Handle;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
+import org.objectweb.asm.commons.ClassRemapper;
+import org.objectweb.asm.commons.Remapper;
 
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 import java.util.jar.JarOutputStream;
 
-/** Makes ojdbc initialize on Android, which has no java.lang.management. */
+/**
+ * Makes ojdbc initialize on Android, which has no java.lang.management.
+ *
+ * With a third argument the driver is also moved under that package prefix (for example
+ * {@code dev/knsql/ojdbc19/}), so an older ojdbc can sit next to the current one: the legacy
+ * copy then answers to {@code dev.knsql.ojdbc19.oracle.jdbc.OracleDriver} and loads only its own
+ * classes, message bundles and property files.
+ */
 public final class PatchOracleJdbc {
     public static void main(String[] args) throws Exception {
         Path input = Path.of(args[0]);
         Path output = Path.of(args[1]);
+        String prefix = args.length > 2 ? args[2] : null;
         Files.createDirectories(output.getParent());
         try (JarFile jar = new JarFile(input.toFile());
              OutputStream fileOut = Files.newOutputStream(output);
              JarOutputStream jarOut = new JarOutputStream(fileOut, jar.getManifest())) {
+            Relocation relocation = prefix == null ? null : new Relocation(prefix, jar);
             var entries = jar.entries();
             while (entries.hasMoreElements()) {
                 JarEntry entry = entries.nextElement();
-                if ("META-INF/MANIFEST.MF".equals(entry.getName())) continue;
+                String name = entry.getName();
+                if ("META-INF/MANIFEST.MF".equals(name) || entry.isDirectory()) continue;
+                // A relocated driver is created directly, never through ServiceLoader, so it can't
+                // claim jdbc:oracle: URLs ahead of the current driver.
+                if (relocation != null && name.startsWith("META-INF/services/")) continue;
+                if (relocation != null && name.startsWith("META-INF/versions/")) continue;
                 byte[] bytes;
                 try (InputStream in = jar.getInputStream(entry)) {
                     bytes = in.readAllBytes();
                 }
-                if (entry.getName().endsWith(".class")) bytes = transform(bytes);
-                JarEntry next = new JarEntry(entry.getName());
+                if (name.endsWith(".class")) bytes = transform(bytes, relocation);
+                if (relocation != null && name.startsWith("oracle/")) name = relocation.prefix + name;
+                JarEntry next = new JarEntry(name);
                 jarOut.putNextEntry(next);
                 jarOut.write(bytes);
                 jarOut.closeEntry();
@@ -39,11 +58,58 @@ public final class PatchOracleJdbc {
         }
     }
 
-    private static byte[] transform(byte[] bytes) {
+    private static byte[] transform(byte[] bytes, Relocation relocation) {
         ClassReader reader = new ClassReader(bytes);
         ClassWriter writer = new ClassWriter(reader, 0);
-        reader.accept(new Visitor(writer), 0);
+        ClassVisitor sink = relocation == null ? writer : new ClassRemapper(writer, relocation);
+        reader.accept(new Visitor(sink), 0);
         return writer.toByteArray();
+    }
+
+    /**
+     * Moves every {@code oracle/...} type under {@link #prefix}. String constants are moved only
+     * when they name something inside the jar (a class, a message bundle, a resource file or a
+     * class-name prefix), so connection property names such as {@code oracle.jdbc.ReadTimeout}
+     * keep working.
+     */
+    private static final class Relocation extends Remapper {
+        final String prefix;
+        private final Set<String> entries = new HashSet<>();
+        private final Set<String> packages = new HashSet<>();
+
+        Relocation(String prefix, JarFile jar) {
+            this.prefix = prefix.endsWith("/") ? prefix : prefix + "/";
+            jar.stream().forEach(entry -> {
+                String name = entry.getName();
+                entries.add(name);
+                int slash = name.lastIndexOf('/');
+                if (name.endsWith(".class") && slash > 0) packages.add(name.substring(0, slash + 1));
+            });
+        }
+
+        @Override
+        public String map(String internalName) {
+            return internalName.startsWith("oracle/") ? prefix + internalName : internalName;
+        }
+
+        @Override
+        public Object mapValue(Object value) {
+            if (value instanceof String text) return mapString(text);
+            return super.mapValue(value);
+        }
+
+        private String mapString(String text) {
+            if (text.startsWith("/oracle/") && entries.contains(text.substring(1))) return "/" + prefix + text.substring(1);
+            if (text.startsWith("oracle/") && (entries.contains(text) || entries.contains(text + ".class"))) return prefix + text;
+            if (!text.startsWith("oracle.") || text.contains(" ") || text.contains("/")) return text;
+            String path = text.replace('.', '/');
+            boolean known = entries.contains(path + ".class") || entries.contains(path + ".properties");
+            // "oracle.net.ano." + name builds class names; "oracle." and "oracle.jdbc." prefix property names.
+            boolean classPrefix = text.endsWith(".") && !"oracle.".equals(text) && !"oracle.jdbc.".equals(text)
+                    && packages.contains(path);
+            if (!known && !classPrefix) return text;
+            return prefix.replace('/', '.') + text;
+        }
     }
 
     private static final class Visitor extends ClassVisitor {

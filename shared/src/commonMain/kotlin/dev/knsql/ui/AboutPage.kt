@@ -220,13 +220,18 @@ private fun AboutBody(
                     )
                     BasicComponent(
                         title = "Oracle JDBC",
-                        summary = tr("连接 Oracle 19c。"),
+                        summary = tr("连接 Oracle 11g R2 至 23ai（ojdbc 23 与 ojdbc 19）。"),
                         onClick = { uriHandler.openUri("https://www.oracle.com/database/technologies/appdev/jdbc.html") },
                     )
                     BasicComponent(
                         title = "MariaDB Connector/J",
-                        summary = tr("用 MySQL 协议连接 MySQL。"),
+                        summary = tr("连接 MySQL 5.5 至 9.x 和 MariaDB。"),
                         onClick = { uriHandler.openUri("https://mariadb.com/kb/en/about-mariadb-connector-j/") },
+                    )
+                    BasicComponent(
+                        title = tr("达梦 JDBC"),
+                        summary = tr("连接达梦 DM7 / DM8。"),
+                        onClick = { uriHandler.openUri("https://eco.dameng.com/document/dm/zh-cn/app-dev/java-jdbc.html") },
                     )
                     BasicComponent(
                         title = tr("Microsoft JDBC 与 jTDS"),
