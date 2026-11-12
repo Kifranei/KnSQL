@@ -9,6 +9,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.layout.SubcomposeLayout
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import top.yukonga.miuix.kmp.blur.BlendColorEntry
@@ -23,7 +25,7 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 /**
  * A page whose content scrolls underneath its top bar, with the bar drawing a Miuix progressive blur
  * of that content: strongest at the top edge, fading out towards the content, like the Miuix example
- * app. [topBar] receives the colour its bar should use (transparent while blurring). [content]
+ * app (and Halcyon). [topBar] receives the colour its bar should use (transparent while blurring). [content]
  * receives the top padding it must leave so its first item starts below the bar.
  *
  * Falls back to a plain bar above the content when the device lacks runtime shaders.
@@ -54,6 +56,7 @@ fun BlurredTopBarLayout(
             Box(
                 Modifier
                     .matchParentSize()
+                    .overhangBelow(ProgressiveOverhang)
                     .progressiveTextureBlur(
                         backdrop = backdrop,
                         shape = RectangleShape,
@@ -86,3 +89,21 @@ fun BlurredTopBarLayout(
 }
 
 private enum class BlurSlot { Bar, Content }
+
+/**
+ * How far the progressive layer spills below the bar (as in Halcyon's top bar), so the blur ramp
+ * finishes over the content instead of ending on the bar's bottom edge.
+ */
+private val ProgressiveOverhang = 16.dp
+
+/** Lays the node out [extra] taller than its slot while reporting the slot size to the parent. */
+private fun Modifier.overhangBelow(extra: Dp): Modifier = layout { measurable, constraints ->
+    if (!constraints.hasBoundedHeight || !constraints.hasBoundedWidth || constraints.maxHeight == 0) {
+        val placeable = measurable.measure(constraints)
+        return@layout layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+    }
+    val placeable = measurable.measure(
+        Constraints.fixed(constraints.maxWidth, constraints.maxHeight + extra.roundToPx()),
+    )
+    layout(constraints.maxWidth, constraints.maxHeight) { placeable.place(0, 0) }
+}

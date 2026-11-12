@@ -22,8 +22,7 @@ This document lists the third-party libraries, database drivers, ported source f
 
 | Source | Files in KnSQL | License | Link | Notes |
 | :-- | :-- | :-- | :-- | :-- |
-| Halcyon — liquid-glass floating bottom bar | `shared/src/androidMain/kotlin/dev/knsql/ui/glass/FloatingBottomBar.kt`, `DampedDragAnimation.kt`, `InteractiveHighlight.kt`, `DragGestureInspector.kt` | **GPL-3.0-only** | https://github.com/Kifranei/Halcyon | These files carry `SPDX-License-Identifier: GPL-3.0-only` headers and credit InstallerX Revived and KernelSU contributors. They keep that license; see the note below. |
-| Halcyon — liquid-glass helpers | `shared/src/androidMain/kotlin/dev/knsql/ui/glass/Lens.kt`, `InnerShadow.kt`, `CombinedBackdrop.kt`, `Vibrancy.kt` | Apache-2.0 | https://github.com/Kifranei/Halcyon | Original headers kept |
+| Miuix `miuix-glass` — OS4 glass navigation bar (via Halcyon) | `shared/src/androidMain/kotlin/top/yukonga/miuix/kmp/glass/*` | Apache-2.0 | https://github.com/compose-miuix-ui/miuix · https://github.com/Kifranei/Halcyon | `GlassNavigationBar`, `glassPanel` and the glass styles / shaders they need. `miuix-glass` is not published to Maven Central yet, so the sources are vendored as carried in Halcyon; original headers kept. Local change: `GlassNavigationItem.badge`. |
 | Halcyon — About page | `shared/src/commonMain/kotlin/dev/knsql/ui/AboutPage.kt`, `AboutVisualTokens.kt` | Apache-2.0 | https://github.com/Kifranei/Halcyon | Flowing background, title blend and frosted-card layout |
 | Miuix example — flowing background | `shared/src/commonMain/kotlin/dev/knsql/ui/effect/*` | Apache-2.0 | https://github.com/compose-miuix-ui/miuix | `BgEffectBackground`, `BgEffectPainter`, OS2 / OS3 shaders, reached through Halcyon |
 
@@ -35,8 +34,6 @@ This document lists the third-party libraries, database drivers, ported source f
 
 No KernelSU source code is bundled; it is listed as a behaviour reference only.
 
-## Note on the GPL-3.0-only files
+## Note on redistribution
 
-The four GPL-3.0-only files above are compiled into the Android build. An APK that includes them is a combined work, and distributing it must also satisfy GPL-3.0: the complete corresponding source has to be available under GPL-3.0 terms. This repository publishes that source. The liquid-glass bottom bar is off by default, but the code is still part of the build.
-
-If those files are replaced by an independent implementation, this note and the table above should be updated before release. For the Oracle, MariaDB and jTDS drivers, redistribution must follow the respective upstream terms.
+The liquid-glass bottom bar used to be ported from Halcyon files licensed GPL-3.0-only. It has been replaced by the Apache-2.0 Miuix `miuix-glass` navigation bar listed above, so no GPL-3.0-only source is compiled into the build any more. For the Oracle, MariaDB and jTDS drivers, redistribution must follow the respective upstream terms.

@@ -69,7 +69,7 @@
 ### 🎨 界面
 
 - Miuix 0.9.4 组件，平板横屏为可展开 / 收起的侧边导航加三栏工作台，手机为底部导航加「对象 / SQL / 结果」分页。
-- 顶栏渐进模糊；底栏默认高斯模糊，可切换为液态玻璃悬浮底栏。
+- 顶栏渐进模糊；底栏默认高斯模糊，可切换为 OS4 风格液态玻璃悬浮底栏。
 - 关于页流光背景与 Logo 混色，参考 Halcyon。
 - 简体中文、繁體中文、English，可在设置中切换，并支持 Android 13 的应用语言设置。
 - 跟随系统 / 浅色 / 深色外观，状态栏与导航条沉浸。
@@ -152,7 +152,7 @@ KNSQL_KEY_ALIAS   # 可选，默认 release
 
 KnSQL 主项目以 **Apache-2.0** 协议开源。第三方组件保留其各自许可证，详见 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)。
 
-液态玻璃底栏中移植自 Halcyon 的 4 个文件为 **GPL-3.0-only**，包含它们的 APK 在分发时同时受 GPL-3.0 约束，说明见 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md#note-on-the-gpl-30-only-files)。
+液态玻璃底栏使用 Miuix `miuix-glass` 的 OS4 玻璃底栏（经 Halcyon 移植，Apache-2.0），不再包含 GPL-3.0-only 源码，说明见 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md#note-on-redistribution)。
 
 ---
 
