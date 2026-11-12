@@ -33,7 +33,7 @@ compose.desktop {
                 "jdk.crypto.ec", "jdk.charsets", "jdk.localedata",
             )
             packageName = "KnSQL"
-            packageVersion = "1.0.0"
+            packageVersion = "1.1.0"
             description = "Miuix database workbench"
             vendor = "KnSQL"
             windows {

@@ -168,7 +168,7 @@ private fun AboutBody(
             )
             Text(
                 modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
-                text = "1.0.0",
+                text = "1.1.0",
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 fontSize = 14.sp,
                 textAlign = TextAlign.Center,
