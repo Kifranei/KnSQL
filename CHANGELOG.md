@@ -1,3 +1,28 @@
+# Unreleased
+
+中文更新日志
+- Oracle 支持扩展到 11g R2、12c、18c：在 ojdbc 23 之外内置 ojdbc 19（重定位到 `dev.knsql.ojdbc19`），连接里可选「自动 / ojdbc 23 / ojdbc 19」；预览与表数据编辑改用 `ROWNUM`，11g 也能用。
+- MySQL：支持 MySQL 8.x 默认的 `caching_sha2_password`（无 TLS 时自动获取公钥），新增「加密连接」开关。
+- 新增达梦 DM7 / DM8：对象树、注释、DDL 导出、表数据与结构编辑，默认端口 5236。
+- 新增 PostgreSQL（pgjdbc）：按 Schema 浏览（隐藏系统 Schema）、表 / 视图 / 物化视图 / 分区表、列注释、`LIMIT` 预览、按主键编辑数据、改列（类型 / 可空 / 默认值 / 重命名 / 注释），DDL 由 `pg_catalog` 生成（含约束、索引、触发器、序列、函数），默认端口 5432。
+- 新增 MariaDB 连接类型（与 MySQL 共用 MariaDB Connector/J 和 `SHOW CREATE` DDL），默认端口 3306。
+- 新增 SQLite（xerial sqlite-jdbc，自带 SQLite 3.54）：桌面直接打开 / 新建文件，Android 通过系统文件选择器复制到应用私有目录后打开；无主键的表按 `rowid` 编辑；只读会话以只读方式打开文件；可导出整个库的 DDL。
+- SQL Server：支持命名实例（实例名字段）和「信任服务器证书」开关。
+- Android 上的下拉选择（设置里的外观 / 语言、Oracle 驱动、数据库类型）和对象树长按菜单改用 Halcyon 的 OS4 液态玻璃弹窗；页面上的弹窗模糊背后的页面，连接编辑器里的弹窗用不透明填充。桌面端不变。
+- 桌面端连接编辑器的数据库类型改为两行；Android 改为下拉选择；SQL 脚本识别 PostgreSQL 的 `$$` 美元引号，`DO` 块和函数体内的分号不再被拆开。
+
+
+English Changelog
+- Oracle now also covers 11g R2, 12c and 18c: ojdbc 19 ships next to ojdbc 23 (relocated to `dev.knsql.ojdbc19`), selectable per connection as Auto / ojdbc 23 / ojdbc 19. Previews and data editing use `ROWNUM`, so they work on 11g.
+- MySQL: MySQL 8.x's default `caching_sha2_password` works without TLS (public key retrieval), and a new Encrypt connection switch enables TLS.
+- New: Dameng DM7 / DM8 with the object tree, comments, DDL export and table data / structure editing; default port 5236.
+- New: PostgreSQL (pgjdbc). Browse by schema (system schemas hidden), tables / views / materialized views / partitioned tables, column comments, `LIMIT` previews, data editing by primary key, column changes (type, NULL, default, rename, comment), and DDL built from `pg_catalog` with constraints, indexes, triggers, sequences and functions; default port 5432.
+- New: a MariaDB connection type, sharing MariaDB Connector/J and the `SHOW CREATE` DDL with MySQL; default port 3306.
+- New: SQLite (xerial sqlite-jdbc with SQLite 3.54 built in). Desktop opens or creates the file in place; Android copies the file picked in the system picker into app storage and opens the copy. Tables without a primary key are edited by `rowid`, read-only sessions open the file read-only, and the whole database's DDL can be exported.
+- SQL Server: named instances (Instance field) and a Trust server certificate switch.
+- Android dropdowns (Appearance and Language in Settings, the Oracle driver, the database type) and the object tree's long-press menu use Halcyon's OS4 liquid glass popups; popups on pages blur the page behind them, and those inside the connection editor use a solid fill. Desktop is unchanged.
+- The database type picker in the connection editor wraps onto two rows on desktop and is a dropdown on Android, and the script splitter understands PostgreSQL `$$` dollar quoting, so semicolons inside `DO` blocks and function bodies stay put.
+
 # 1.0.0
 
 First release.

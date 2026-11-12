@@ -14,7 +14,7 @@
 </p>
 
 <p align="center">
-  <b>Oracle 19c · MySQL · SQL Server · 整脚本执行 · 对象树 · DDL 导出 · 表数据与结构编辑 · 多语言界面</b>
+  <b>Oracle 11g R2–23ai · MySQL · MariaDB · PostgreSQL · SQL Server · SQLite · 达梦 DM · 整脚本执行 · 对象树 · DDL 导出 · 表数据与结构编辑 · 多语言界面</b>
 </p>
 
 ---
@@ -31,7 +31,20 @@
 
 ### 🔌 连接
 
-- 支持 **Oracle 19c**（服务名或 SID，自动互相回退；可选 SYSDBA）、**MySQL / MariaDB**、**SQL Server**（Microsoft JDBC，加载失败时回退 jTDS）。
+- 支持的数据库：
+
+  | 数据库 | 版本 | 驱动 |
+  | :-- | :-- | :-- |
+  | **Oracle** | 11g R2、12c、18c、19c、21c、23ai | ojdbc 23（19c 及以上）+ ojdbc 19（11g R2–18c），默认自动选择，也可在连接里指定 |
+  | **MySQL** | 5.5–9.x（含 8.x 默认的 `caching_sha2_password`） | MariaDB Connector/J，可选 TLS 加密 |
+  | **MariaDB** | 10.x / 11.x | MariaDB Connector/J，可选 TLS 加密，默认端口 3306 |
+  | **PostgreSQL** | 9.6–18 | PostgreSQL JDBC（pgjdbc），按 Schema 浏览，可选 TLS（`sslmode=require`），默认端口 5432 |
+  | **SQL Server** | 2012 及以上（更早版本经 jTDS） | Microsoft JDBC，加载失败时回退 jTDS；支持命名实例（`HOST\SQLEXPRESS`）和「信任服务器证书」开关 |
+  | **SQLite** | SQLite 3 数据库文件 | SQLite JDBC（xerial，自带 SQLite 3.54 引擎）；桌面直接打开文件，Android 把选中的文件复制到应用私有目录再打开 |
+  | **达梦 DM** | DM7 / DM8 | 达梦官方 JDBC（`DmJdbcDriver8`），默认端口 5236 |
+
+- Oracle 按服务名或 SID 连接，连不上时自动互相回退，可选 SYSDBA；达梦的「模式」可留空，留空时使用登录用户的默认模式。
+- SQLite 没有主机和账号，只填数据库文件；没有主键的表按 `rowid` 编辑；改列只支持重命名（SQLite 本身不能原地改类型），也没有注释。Android 上编辑的是应用里的副本，原文件不变。
 - 数据库流量绑定到系统 VPN，Tailscale 内网转发可直接连通；连不上时自动重试一次并提示检查 VPN。
 - 后台保活双层保险：空闲会话每 90 秒心跳一次，断线后在下次执行前自动重连；Android 上以前台服务和常驻通知防止进程被系统回收。
 - 同一个库只保留一个会话，多个库之间用顶部胶囊切换，每个会话的对象树分开显示。
@@ -40,7 +53,7 @@
 ### 📝 SQL 编辑与执行
 
 - **Alt+X** 执行整个脚本，**Ctrl+Enter** 执行光标所在语句。
-- 脚本分隔：`;`、Oracle 单独一行的 `/`、SQL Server 的 `GO`、MySQL 的 `DELIMITER`，PL/SQL 与 T-SQL 过程体内的分号不会被拆开。
+- 脚本分隔：`;`、Oracle 单独一行的 `/`、SQL Server 的 `GO`、MySQL 的 `DELIMITER`，PL/SQL、T-SQL 过程体和 PostgreSQL `$$` 引号内的分号不会被拆开。
 - 可打开整个 `.sql` 文件（UTF-8 / GBK，最大 20 MB），也可把编辑器内容保存成文件。
 - INSERT、UPDATE、DELETE 和 DDL 默认先弹出确认。
 - 执行历史保留最近 100 条：点一条放回编辑器，长按多选删除，可一键清空。
@@ -56,20 +69,20 @@
 
 - 按库 / Schema / 表 / 视图 / 列浏览，显示表、视图和列的注释。
 - 长按表查看 DDL，长按 Schema 或数据库导出全部 DDL，按可重建顺序输出：序列、类型、表、索引、注释、外键、视图、函数、存储过程、包、触发器、同义词。
-- Oracle 使用 `DBMS_METADATA`，MySQL 使用 `SHOW CREATE`，SQL Server 从系统表生成；可复制、保存为 `.sql` 或放入编辑器。
+- Oracle 使用 `DBMS_METADATA`，MySQL / MariaDB 使用 `SHOW CREATE`，SQL Server 从系统表生成，PostgreSQL 由 `pg_catalog` 与 `pg_get_*def` 生成，SQLite 取 `sqlite_master` 中的原始建表语句，达梦优先用 `DBMS_METADATA`、其次 `TABLEDEF` / 数据字典；可复制、保存为 `.sql` 或放入编辑器。
 
 ### ✏️ 表数据与结构编辑
 
 - **编辑数据**：点单元格修改、设为 NULL，新增行（未填写的列使用默认值），长按选择行后删除。
 - 所有修改先预览生成的 SQL，再在一个事务中提交；任一条失败，或 UPDATE / DELETE 影响的行数不是 1，都会全部回滚。
-- 行定位使用 Oracle 的 `ROWID` 或主键，值按列类型绑定参数执行；没有主键的表只能新增行。
+- 行定位使用 Oracle 的 `ROWID`、SQLite 无主键表的 `rowid` 或主键（达梦、MySQL、MariaDB、PostgreSQL、SQL Server、SQLite 按主键），值按列类型绑定参数执行；没有主键的表只能新增行。
 - **修改表结构**：新增列、修改列（名称、类型、可空、默认值、注释）、删除列、修改表注释，执行前显示各数据库对应的 DDL。
 - 只读连接不能进入编辑。
 
 ### 🎨 界面
 
 - Miuix 0.9.4 组件，平板横屏为可展开 / 收起的侧边导航加三栏工作台，手机为底部导航加「对象 / SQL / 结果」分页。
-- 顶栏渐进模糊；底栏默认高斯模糊，可切换为 OS4 风格液态玻璃悬浮底栏。
+- 顶栏渐进模糊；底栏默认高斯模糊，可切换为 OS4 风格液态玻璃悬浮底栏。Android 上的下拉选择与长按菜单使用 OS4 液态玻璃弹窗。
 - 关于页流光背景与 Logo 混色，参考 Halcyon。
 - 简体中文、繁體中文、English，可在设置中切换，并支持 Android 13 的应用语言设置。
 - 跟随系统 / 浅色 / 深色外观，状态栏与导航条沉浸。
@@ -136,7 +149,7 @@ KNSQL_KEY_ALIAS   # 可选，默认 release
 
 密钥库固定为项目根目录下的 `release.jks`。缺少密钥库或密码时，Release APK 不签名输出。`release.jks` 和 `local.properties` 已在 `.gitignore` 中排除，不要提交。
 
-构建时会用 ASM 改写 Oracle JDBC 驱动中 Android 无法加载的部分（JMX 注册、Android 不支持的正则写法），见 `shared/oracle-patch/`。
+构建时会用 ASM 改写 Oracle JDBC 驱动中 Android 无法加载的部分（JMX 注册、Android 不支持的正则写法），见 `shared/oracle-patch/`。用于 11g R2–18c 的 ojdbc 19 还会整体移到 `dev.knsql.ojdbc19` 包下，与 ojdbc 23 共存、互不冲突。
 
 测试：
 
@@ -152,15 +165,15 @@ KNSQL_KEY_ALIAS   # 可选，默认 release
 
 KnSQL 主项目以 **Apache-2.0** 协议开源。第三方组件保留其各自许可证，详见 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md)。
 
-液态玻璃底栏使用 Miuix `miuix-glass` 的 OS4 玻璃底栏（经 Halcyon 移植，Apache-2.0），不再包含 GPL-3.0-only 源码，说明见 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md#note-on-redistribution)。
+液态玻璃底栏和 Android 上的玻璃下拉弹窗使用 Miuix `miuix-glass` 的 OS4 玻璃组件（经 Halcyon 移植，Apache-2.0），不再包含 GPL-3.0-only 源码，说明见 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md#note-on-redistribution)。
 
 ---
 
 ## 👥 致谢
 
-- **Halcyon** — 关于页流光背景、液态玻璃底栏与设置页卡片样式参考及移植来源。
+- **Halcyon** — 关于页流光背景、液态玻璃底栏、OS4 玻璃下拉弹窗与设置页卡片样式参考及移植来源。
 - **KernelSU** — 关于页横屏避让参考。
-- 感谢 KnSQL 所使用的 Miuix、Compose Multiplatform、Kotlin、Oracle JDBC、MariaDB Connector/J、Microsoft JDBC Driver for SQL Server、jTDS 以及其它开源项目。
+- 感谢 KnSQL 所使用的 Miuix、Compose Multiplatform、Kotlin、Oracle JDBC、MariaDB Connector/J、Microsoft JDBC Driver for SQL Server、jTDS、达梦 JDBC 以及其它开源项目。
 
 ---
 

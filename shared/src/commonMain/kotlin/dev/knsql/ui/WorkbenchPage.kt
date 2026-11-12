@@ -23,10 +23,6 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
-import top.yukonga.miuix.kmp.basic.DropdownImpl
-import top.yukonga.miuix.kmp.basic.ListPopupColumn
-import top.yukonga.miuix.kmp.basic.PopupPositionProvider
-import top.yukonga.miuix.kmp.window.WindowListPopup
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.horizontalScroll
@@ -222,6 +218,9 @@ private fun ObjectTree(workbench: Workbench, modifier: Modifier) {
                 onDdl = { workbench.showDdl(node) },
                 onEditData = { workbench.openDataEditor(node) },
                 onEditStructure = { workbench.openStructureEditor(node) },
+                // A SQLite file has no schema level, so its whole-database DDL hangs off the session row.
+                sessionDdl = node.meta.kind == NodeKind.Session &&
+                    workbench.connections.find { it.id == node.savedId }?.engine?.fileBased == true,
             )
         }
     }
@@ -264,10 +263,11 @@ private fun TreeRow(
     onDdl: () -> Unit,
     onEditData: () -> Unit,
     onEditStructure: () -> Unit,
+    sessionDdl: Boolean = false,
 ) {
     val kind = node.meta.kind
     val openable = kind == NodeKind.Table || kind == NodeKind.View
-    val container = kind == NodeKind.Schema || kind == NodeKind.Catalog
+    val container = kind == NodeKind.Schema || kind == NodeKind.Catalog || sessionDdl
     val actions = when {
         kind == NodeKind.Table -> listOf(
             tr("预览数据") to onOpen,
@@ -327,26 +327,7 @@ private fun TreeRow(
             }
         }
         if (actions.isNotEmpty()) {
-            WindowListPopup(
-                show = menu,
-                alignment = PopupPositionProvider.Align.Start,
-                onDismissRequest = { menu = false },
-            ) {
-                ListPopupColumn {
-                    actions.forEachIndexed { index, (label, action) ->
-                        DropdownImpl(
-                            text = label,
-                            optionSize = actions.size,
-                            isSelected = false,
-                            index = index,
-                            onSelectedIndexChange = {
-                                menu = false
-                                action()
-                            },
-                        )
-                    }
-                }
-            }
+            AppActionMenu(show = menu, onDismissRequest = { menu = false }, actions = actions)
         }
     }
 }

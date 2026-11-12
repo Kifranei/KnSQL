@@ -89,4 +89,10 @@ internal val editTexts = listOf(
     Text("“{0}”不是有效的日期，格式为 2024-01-31", "「{0}」不是有效的日期，格式為 2024-01-31", "\"{0}\" isn't a valid date. Use 2024-01-31"),
     Text("“{0}”不是有效的时间，格式为 08:30:00", "「{0}」不是有效的時間，格式為 08:30:00", "\"{0}\" isn't a valid time. Use 08:30:00"),
     Text("前 {0} 条已经生效。", "前 {0} 條已經生效。", " The first {0} already took effect."),
+    Text(
+        "SQLite 只能重命名列；修改类型、可空或默认值需要重建表。",
+        "SQLite 只能重新命名欄位；修改型別、可空或預設值需要重建資料表。",
+        "SQLite can only rename columns; changing the type, NULL or default needs the table rebuilt.",
+    ),
+    Text("SQLite 不支持表注释和列注释。", "SQLite 不支援資料表註解和欄位註解。", "SQLite has no table or column comments."),
 )

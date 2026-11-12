@@ -155,8 +155,14 @@ class Workbench(
     }
 
     fun saveConnection(draft: ConnectionDraft, previousCipher: String): Boolean {
-        val port = draft.port.toIntOrNull()
-        if (draft.name.isBlank() || draft.host.isBlank() || port == null) {
+        if (draft.engine.fileBased) {
+            if (draft.name.isBlank() || draft.database.isBlank()) {
+                _messages.tryEmit(tr("请填写名称和数据库文件"))
+                return false
+            }
+        }
+        val port = if (draft.engine.fileBased) 0 else draft.port.toIntOrNull()
+        if (!draft.engine.fileBased && (draft.name.isBlank() || draft.host.isBlank() || port == null)) {
             _messages.tryEmit(tr("请填写名称、主机和有效端口"))
             return false
         }
@@ -174,14 +180,17 @@ class Workbench(
             name = draft.name.trim(),
             engine = draft.engine,
             host = draft.host.trim(),
-            port = port,
+            port = port ?: 0,
             database = draft.database.trim(),
             oracleSid = draft.oracleSid,
+            oracleDriver = draft.oracleDriver,
             username = draft.username.trim(),
             passwordCipher = password,
             sysdba = draft.sysdba,
             encrypt = draft.encrypt,
             readOnly = draft.readOnly,
+            instance = draft.instance.trim(),
+            trustServerCertificate = draft.trustServerCertificate,
         )
         val next = connections.filterNot { it.id == saved.id } + saved
         connections = next.sortedBy { it.name.lowercase() }
@@ -398,13 +407,14 @@ class Workbench(
 
     fun showDdl(node: TreeNode) {
         val kind = node.meta.kind
-        val whole = kind == NodeKind.Schema || kind == NodeKind.Catalog
+        val saved = connections.find { it.id == node.savedId }
+        val whole = kind == NodeKind.Schema || kind == NodeKind.Catalog ||
+            (kind == NodeKind.Session && saved?.engine?.fileBased == true)
         if (!whole && kind != NodeKind.Table && kind != NodeKind.View) return
         if (busy) {
             _messages.tryEmit(tr("等当前任务完成后再查看 DDL"))
             return
         }
-        val saved = connections.find { it.id == node.savedId }
         val name = listOfNotNull(
             node.meta.catalog?.takeIf { saved?.engine == Engine.SqlServer || whole },
             node.meta.schema,
@@ -731,7 +741,7 @@ fun newId(): String = kotlin.random.Random.nextBytes(16).joinToString("") { byte
 private val defaultQueries = setOf("SELECT 1", "SELECT 1 FROM DUAL")
 
 private fun defaultQuery(engine: Engine): String =
-    if (engine == Engine.Oracle) "SELECT 1 FROM DUAL" else "SELECT 1"
+    if (engine.oracleLike) "SELECT 1 FROM DUAL" else "SELECT 1"
 
 private fun formatSize(chars: Int): String = when {
     chars >= 1_048_576 -> tr("{0} M 字符", (chars / 104_857.6).toInt() / 10.0)

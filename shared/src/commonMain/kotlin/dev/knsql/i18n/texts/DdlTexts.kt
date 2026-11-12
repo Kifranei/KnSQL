@@ -67,4 +67,5 @@ internal val ddlTexts = listOf<Text>(
         "{0} 下沒有可匯出的物件，或者目前帳號沒有查看權限。",
         "Nothing to export in {0}, or the current account has no permission to view its objects.",
     ),
+    Text("找不到视图 {0}", "找不到檢視 {0}", "View {0} not found"),
 )

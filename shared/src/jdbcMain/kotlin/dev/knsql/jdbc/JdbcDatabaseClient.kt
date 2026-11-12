@@ -1,6 +1,7 @@
 package dev.knsql.jdbc
 
 import dev.knsql.data.DatabaseClient
+import dev.knsql.data.SqliteFiles
 import dev.knsql.data.prepareDatabaseNetwork
 import dev.knsql.i18n.tr
 import dev.knsql.model.ConnectionDraft
@@ -8,6 +9,7 @@ import dev.knsql.model.Engine
 import dev.knsql.model.MetaNode
 import dev.knsql.model.NodeKind
 import dev.knsql.model.OpenedSession
+import dev.knsql.model.OracleDriver
 import dev.knsql.model.QueryResult
 import dev.knsql.model.BoundStatement
 import dev.knsql.model.EditableData
@@ -18,6 +20,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.sql.Connection
+import java.sql.Driver
 import java.sql.DriverManager
 import java.sql.ResultSet
 import java.sql.Statement
@@ -40,7 +43,9 @@ object JdbcDatabaseClient : DatabaseClient {
         val connection = connect(draft)
         try {
             val meta = connection.metaData
-            compactServerInfo(meta.databaseProductName, meta.databaseProductVersion)
+            val info = compactServerInfo(meta.databaseProductName, meta.databaseProductVersion)
+            val driver = runCatching { "${meta.driverName} ${meta.driverVersion}" }.getOrNull()
+            if (driver.isNullOrBlank()) info else "$info\n$driver"
         } finally {
             connection.close()
         }
@@ -80,7 +85,8 @@ object JdbcDatabaseClient : DatabaseClient {
         try {
             statement.queryTimeout = timeoutSec.coerceAtLeast(1)
             statement.maxRows = if (maxRows <= 0) 0 else maxRows + 1
-            statement.fetchSize = 100
+            // sqlite-jdbc rejects a fetch size above maxRows.
+            runCatching { statement.fetchSize = if (maxRows <= 0) 100 else minOf(100, maxRows + 1) }
             val started = System.nanoTime()
             val hasResult = statement.execute(sql)
             val results = mutableListOf<QueryResult>()
@@ -130,7 +136,7 @@ object JdbcDatabaseClient : DatabaseClient {
         val live = sessions[handle] ?: error(tr("连接已关闭"))
         live.connection.createStatement().use { statement ->
             statement.queryTimeout = 10
-            statement.executeQuery(if (live.engine == Engine.Oracle) "SELECT 1 FROM DUAL" else "SELECT 1").use { it.next() }
+            statement.executeQuery(if (live.engine.oracleLike) "SELECT 1 FROM DUAL" else "SELECT 1").use { it.next() }
         }
         Unit
     }
@@ -158,13 +164,24 @@ object JdbcDatabaseClient : DatabaseClient {
                     table.schema ?: currentOracleSchema(connection), table.schema ?: currentOracleSchema(connection),
                     table.name, table.name,
                 )
-                Engine.MySql -> pairs(
+                Engine.MySql, Engine.MariaDb -> pairs(
                     connection,
                     "SELECT COLUMN_NAME, COLUMN_COMMENT FROM information_schema.COLUMNS " +
                         "WHERE TABLE_SCHEMA = COALESCE(?, DATABASE()) AND TABLE_NAME = ? AND COLUMN_COMMENT <> ''",
                     table.catalog ?: table.schema, table.name,
                 )
                 Engine.SqlServer -> sqlServerColumnComments(connection, table.catalog, table.schema, table.name)
+                Engine.Dameng -> damengColumnComments(connection, table)
+                Engine.PostgreSql -> pairs(
+                    connection,
+                    "SELECT a.attname, d.description FROM pg_catalog.pg_attribute a " +
+                        "JOIN pg_catalog.pg_class c ON c.oid = a.attrelid " +
+                        "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace " +
+                        "JOIN pg_catalog.pg_description d ON d.objoid = c.oid AND d.objsubid = a.attnum " +
+                        "WHERE n.nspname = COALESCE(?, current_schema()) AND c.relname = ? AND a.attnum > 0",
+                    table.schema, table.name,
+                )
+                Engine.Sqlite -> emptyMap()
             }.mapKeys { it.key.uppercase() }
         }
 
@@ -233,37 +250,111 @@ object JdbcDatabaseClient : DatabaseClient {
         if (draft.username.isNotEmpty()) props["user"] = draft.username
         if (draft.password.isNotEmpty()) props["password"] = draft.password
         val url = when (draft.engine) {
-            Engine.MySql -> mysqlUrl(draft.host.trim(), port, draft.database.trim())
-            Engine.SqlServer -> sqlServerUrl(draft.host.trim(), port, draft.database.trim(), draft.encrypt)
+            Engine.MySql -> mysqlUrl(draft.host.trim(), port, draft.database.trim(), draft.encrypt)
+            Engine.MariaDb -> {
+                ensureDriver("org.mariadb.jdbc.Driver", "MariaDB")
+                mariaDbUrl(draft.host.trim(), port, draft.database.trim(), draft.encrypt)
+            }
+            Engine.PostgreSql -> {
+                ensureDriver("org.postgresql.Driver", "PostgreSQL")
+                postgresUrl(draft.host.trim(), port, draft.database.trim(), draft.encrypt)
+            }
+            Engine.Sqlite -> {
+                ensureDriver("org.sqlite.JDBC", "SQLite")
+                props.remove("user")
+                props.remove("password")
+                val file = SqliteFiles.resolve(draft.database)
+                if (draft.readOnly) {
+                    // xerial cannot switch to read-only after opening, so the file is opened read-only.
+                    props["open_mode"] = "1"
+                    if (!file.exists()) throw java.sql.SQLException(tr("找不到数据库文件 {0}", file.path))
+                } else {
+                    file.parentFile?.mkdirs()
+                }
+                props["foreign_keys"] = "true"
+                props["busy_timeout"] = "5000"
+                "jdbc:sqlite:" + file.path
+            }
+            Engine.SqlServer -> sqlServerUrl(
+                draft.host.trim(), port, draft.instance.trim(), draft.database.trim(), draft.encrypt, draft.trustServerCertificate,
+            )
+            Engine.Dameng -> {
+                ensureDriver("dm.jdbc.driver.DmDriver", "DM")
+                props["connectTimeout"] = "15000"
+                props["socketTimeout"] = "660000"
+                props["keepAlive"] = "true"
+                damengUrl(draft.host.trim(), port, draft.database.trim())
+            }
             Engine.Oracle -> {
-                ensureOracleDriver()
                 if (draft.sysdba) props["internal_logon"] = "sysdba"
                 props["oracle.net.CONNECT_TIMEOUT"] = "15000"
                 props["oracle.jdbc.ReadTimeout"] = "660000"
                 props["oracle.net.keepAlive"] = "true"
-                return openOracle(draft.host.trim(), port, draft.database.trim(), draft.oracleSid, props)
+                return openOracle(draft, port, props)
             }
         }
         return DriverManager.getConnection(url, props)
     }
 
+    /**
+     * ojdbc 23 speaks to Oracle 19c and newer only; ojdbc 19 (relocated under dev.knsql.ojdbc19)
+     * covers 11g R2 to 18c. Both answer jdbc:oracle: URLs, so they are called directly instead of
+     * through DriverManager.
+     */
+    private fun openOracle(draft: ConnectionDraft, port: Int, props: Properties): Connection {
+        val host = draft.host.trim()
+        val database = draft.database.trim()
+        return when (draft.oracleDriver) {
+            OracleDriver.Modern -> openOracle(oracleDriver(legacy = false), host, port, database, draft.oracleSid, props)
+            OracleDriver.Legacy -> openOracle(oracleDriver(legacy = true), host, port, database, draft.oracleSid, props)
+            OracleDriver.Auto -> {
+                val modern = try {
+                    openOracle(oracleDriver(legacy = false), host, port, database, draft.oracleSid, props)
+                } catch (first: java.sql.SQLException) {
+                    // Wrong password, locked account, unknown service or an unreachable host won't get
+                    // better with an older driver; anything else (protocol / version errors) might.
+                    if (first.isNetworkFailure() || first.isOracleLoginError()) throw first
+                    try {
+                        return openOracle(oracleDriver(legacy = true), host, port, database, draft.oracleSid, props)
+                    } catch (second: java.sql.SQLException) {
+                        throw java.sql.SQLException(
+                            first.message + "\n" + tr("改用 ojdbc 19 也失败：{0}", second.message),
+                            second,
+                        )
+                    }
+                }
+                val major = runCatching { modern.metaData.databaseMajorVersion }.getOrDefault(99)
+                if (major >= 19) return modern
+                // ojdbc 23 logged in to a pre-19c server, which Oracle doesn't support: prefer ojdbc 19.
+                val legacy = runCatching {
+                    openOracle(oracleDriver(legacy = true), host, port, database, draft.oracleSid, props)
+                }.getOrNull() ?: return modern
+                runCatching { modern.close() }
+                legacy
+            }
+        }
+    }
+
     private fun openOracle(
+        driver: Driver,
         host: String,
         port: Int,
         database: String,
         sid: Boolean,
         props: Properties,
     ): Connection {
+        fun open(url: String): Connection =
+            driver.connect(url, props) ?: throw java.sql.SQLException(tr("驱动不接受地址 {0}", url))
         val primary = oracleUrl(host, port, database, sid)
         try {
-            return DriverManager.getConnection(primary, props)
+            return open(primary)
         } catch (first: java.sql.SQLException) {
             val text = first.message.orEmpty()
             val wrongName = text.contains("ORA-12514") || text.contains("ORA-12505")
             if (!wrongName) throw first
             val alternate = oracleUrl(host, port, database, !sid)
             try {
-                return DriverManager.getConnection(alternate, props)
+                return open(alternate)
             } catch (second: java.sql.SQLException) {
                 throw java.sql.SQLException(
                     text + "\n" + tr("另一种方式 {0} 也失败：{1}", alternate, second.message),
@@ -273,11 +364,23 @@ object JdbcDatabaseClient : DatabaseClient {
         }
     }
 
-    private fun ensureOracleDriver() {
+    private val oracleDrivers = ConcurrentHashMap<Boolean, Driver>()
+
+    private fun oracleDriver(legacy: Boolean): Driver = oracleDrivers.getOrPut(legacy) {
+        val name = if (legacy) "dev.knsql.ojdbc19.oracle.jdbc.OracleDriver" else "oracle.jdbc.OracleDriver"
         try {
-            Class.forName("oracle.jdbc.OracleDriver")
+            Class.forName(name).getDeclaredConstructor().newInstance() as Driver
         } catch (error: Throwable) {
-            throw java.sql.SQLException(tr("Oracle 驱动没有在这台设备上加载成功。{0}", error.explain()), error)
+            val label = if (legacy) "Oracle (ojdbc 19)" else "Oracle (ojdbc 23)"
+            throw java.sql.SQLException(tr("{0} 驱动没有在这台设备上加载成功。{1}", label, error.explain()), error)
+        }
+    }
+
+    private fun ensureDriver(className: String, label: String) {
+        try {
+            Class.forName(className)
+        } catch (error: Throwable) {
+            throw java.sql.SQLException(tr("{0} 驱动没有在这台设备上加载成功。{1}", label, error.explain()), error)
         }
     }
 
@@ -285,14 +388,17 @@ object JdbcDatabaseClient : DatabaseClient {
         val meta = live.connection.metaData
         return when (live.engine) {
             Engine.Oracle -> oracleSchemas(live)
-            Engine.MySql -> catalogs(meta).map { MetaNode(it, NodeKind.Catalog, catalog = it) }
+            Engine.MySql, Engine.MariaDb -> catalogs(meta).map { MetaNode(it, NodeKind.Catalog, catalog = it) }
             Engine.SqlServer -> catalogs(meta).map { MetaNode(it, NodeKind.Catalog, catalog = it) }
+            Engine.Dameng -> damengSchemas(live)
+            Engine.PostgreSql -> postgresSchemas(live)
+            Engine.Sqlite -> loadRelations(live, null, null)
         }
     }
 
     private fun loadUnderCatalog(live: LiveConnection, catalog: String): List<MetaNode> {
         val schemas = schemas(live.connection.metaData, catalog)
-        if (live.engine == Engine.MySql || schemas.isEmpty() || schemas.all { it.equals(catalog, true) }) {
+        if (live.engine.mysqlLike || schemas.isEmpty() || schemas.all { it.equals(catalog, true) }) {
             return loadRelations(live, catalog, null)
         }
         return schemas.map { MetaNode(it, NodeKind.Schema, catalog = catalog, schema = it) }
@@ -302,10 +408,16 @@ object JdbcDatabaseClient : DatabaseClient {
         if (live.engine == Engine.Oracle) return oracleRelations(live, schema)
         val meta = live.connection.metaData
         val nodes = mutableListOf<MetaNode>()
-        meta.getTables(catalog, schema, "%", arrayOf("TABLE", "VIEW")).use { set ->
+        val types = if (live.engine == Engine.PostgreSql) {
+            arrayOf("TABLE", "VIEW", "PARTITIONED TABLE", "MATERIALIZED VIEW", "FOREIGN TABLE")
+        } else {
+            arrayOf("TABLE", "VIEW")
+        }
+        meta.getTables(catalog, schema, "%", types).use { set ->
             var count = 0
             while (set.next() && count < 800) {
                 val name = set.getString("TABLE_NAME") ?: continue
+                if (live.engine == Engine.Sqlite && name.startsWith("sqlite_")) continue
                 val type = set.getString("TABLE_TYPE") ?: "TABLE"
                 val kind = if (type.contains("VIEW", true)) NodeKind.View else NodeKind.Table
                 val remark = runCatching { set.getString("REMARKS") }.getOrNull()?.takeIf { it.isNotBlank() }
@@ -313,12 +425,20 @@ object JdbcDatabaseClient : DatabaseClient {
                     label = name,
                     kind = kind,
                     catalog = catalog,
-                    schema = schema ?: set.getString("TABLE_SCHEM"),
+                    schema = if (live.engine == Engine.Sqlite) null else schema ?: set.getString("TABLE_SCHEM"),
                     relation = name,
                     relationType = type,
                     comment = remark,
                 )
                 count++
+            }
+        }
+        if (live.engine == Engine.Dameng && schema != null && nodes.none { it.comment != null }) {
+            val remarks = runCatching {
+                pairs(live.connection, "SELECT TABLE_NAME, COMMENTS FROM ALL_TAB_COMMENTS WHERE OWNER = ?", schema)
+            }.getOrDefault(emptyMap())
+            if (remarks.isNotEmpty()) {
+                nodes.replaceAll { node -> remarks[node.label]?.let { node.copy(comment = it) } ?: node }
             }
         }
         if (live.engine == Engine.SqlServer && schema != null) {
@@ -357,6 +477,57 @@ object JdbcDatabaseClient : DatabaseClient {
             }
         }
         return nodes.map { it.copy(relation = parent.relation) }
+    }
+
+    /** Schemas of the connected PostgreSQL database; system schemas stay hidden, the current one comes first. */
+    private fun postgresSchemas(live: LiveConnection): List<MetaNode> {
+        val current = runCatching { queryOne(live.connection, "SELECT current_schema()") }.getOrNull()
+        return schemas(live.connection.metaData, null)
+            .filter { name ->
+                name == current || !(
+                    name == "information_schema" || name == "pg_catalog" ||
+                        name.startsWith("pg_toast") || name.startsWith("pg_temp")
+                    )
+            }
+            .sortedWith(compareBy<String> { if (it == current) 0 else 1 }.thenBy { it })
+            .map { MetaNode(it, NodeKind.Schema, schema = it) }
+    }
+
+    /** DM separates users from schemas, so schemas come from JDBC metadata rather than ALL_USERS. */
+    private fun damengSchemas(live: LiveConnection): List<MetaNode> {
+        val current = runCatching { currentOracleSchema(live.connection) }.getOrNull()?.takeIf { it.isNotBlank() }
+            ?: sessionSchema(live.connection)
+        val names = schemas(live.connection.metaData, null).ifEmpty {
+            runCatching { queryColumn(live.connection, "SELECT DISTINCT OWNER FROM ALL_OBJECTS ORDER BY OWNER") }
+                .getOrDefault(emptyList())
+        }
+        return names
+            .filter { it.uppercase() !in damengHidden || it.equals(current, true) }
+            .sortedWith(compareBy<String> { if (it.equals(current, true)) 0 else 1 }.thenBy { it })
+            .map { MetaNode(it, NodeKind.Schema, schema = it) }
+    }
+
+    /** Column comments of a DM table: the Oracle-compatible view first, JDBC REMARKS otherwise. */
+    private fun damengColumnComments(connection: Connection, table: TableRef): Map<String, String> {
+        val schema = table.schema ?: runCatching { currentOracleSchema(connection) }.getOrNull()
+            ?: sessionSchema(connection)
+        val viaView = runCatching {
+            pairs(
+                connection,
+                "SELECT COLUMN_NAME, COMMENTS FROM ALL_COL_COMMENTS " +
+                    "WHERE OWNER IN (?, UPPER(?)) AND TABLE_NAME IN (?, UPPER(?)) AND COMMENTS IS NOT NULL",
+                schema, schema, table.name, table.name,
+            )
+        }.getOrNull()
+        if (!viaView.isNullOrEmpty()) return viaView
+        val output = mutableMapOf<String, String>()
+        connection.metaData.getColumns(null, schema, table.name, "%").use { set ->
+            while (set.next()) {
+                val name = set.getString("COLUMN_NAME") ?: continue
+                runCatching { set.getString("REMARKS") }.getOrNull()?.takeIf { it.isNotBlank() }?.let { output[name] = it }
+            }
+        }
+        return output
     }
 
     private fun oracleSchemas(live: LiveConnection): List<MetaNode> {
@@ -566,31 +737,89 @@ private val oracleHidden = setOf(
     "SYS", "SYSTEM", "XDB", "CTXSYS", "MDSYS", "OLAPSYS", "ORDSYS", "ORDDATA", "OUTLN",
     "DBSNMP", "APPQOSSYS", "WMSYS", "OJVMSYS", "GSMADMIN_INTERNAL", "AUDSYS", "DVSYS",
     "LBACSYS", "GGSYS", "DBSFWUSER", "REMOTE_SCHEDULER_AGENT", "ANONYMOUS",
+    // 11g / 12c
+    "EXFSYS", "SYSMAN", "MGMT_VIEW", "OWBSYS", "OWBSYS_AUDIT", "FLOWS_FILES", "APEX_PUBLIC_USER",
+    "SPATIAL_CSW_ADMIN_USR", "SPATIAL_WFS_ADMIN_USR", "SI_INFORMTN_SCHEMA", "ORACLE_OCM", "DIP",
+    "XS\$NULL", "MDDATA", "ORDPLUGINS", "SYSBACKUP", "SYSDG", "SYSKM", "SYSRAC",
 )
 
-private fun mysqlUrl(host: String, port: Int, database: String): String {
+/** DM system schemas; SYSDBA stays visible because many installs keep their tables there. */
+private val damengHidden = setOf("SYS", "SYSAUDITOR", "SYSSSO", "CTISYS", "SYSJOB")
+
+/**
+ * MariaDB Connector/J, for MySQL 5.5 to 9.x and MariaDB. allowPublicKeyRetrieval lets MySQL 8's
+ * default caching_sha2_password (and sha256_password) log in without TLS; with [encrypt] the link
+ * uses TLS and trusts the server certificate, like the SQL Server option.
+ */
+private fun mysqlUrl(host: String, port: Int, database: String, encrypt: Boolean): String {
     val path = database.ifBlank { "" }
-    return "jdbc:mariadb://$host:$port/$path?connectTimeout=15000&socketTimeout=660000&tcpKeepAlive=true&useUnicode=true&characterEncoding=utf8"
+    val ssl = if (encrypt) "trust" else "disable"
+    return "jdbc:mariadb://$host:$port/$path?connectTimeout=15000&socketTimeout=660000&tcpKeepAlive=true" +
+        "&useUnicode=true&characterEncoding=utf8&allowPublicKeyRetrieval=true&sslMode=$ssl"
+}
+
+/** MariaDB 10.x / 11.x through the same MariaDB Connector/J as MySQL. */
+private fun mariaDbUrl(host: String, port: Int, database: String, encrypt: Boolean): String =
+    mysqlUrl(host, port, database, encrypt)
+
+/**
+ * pgjdbc. GSS encryption is switched off because it needs org.ietf.jgss, which Android lacks; with
+ * [encrypt] the link requires TLS without checking the certificate chain (sslmode=require).
+ * stringtype=unspecified lets text bind values land in uuid / json / enum / date columns.
+ */
+internal fun postgresUrl(host: String, port: Int, database: String, encrypt: Boolean): String {
+    val db = java.net.URLEncoder.encode(database.ifBlank { "postgres" }, "UTF-8")
+    val ssl = if (encrypt) "require" else "disable"
+    return "jdbc:postgresql://$host:$port/$db?connectTimeout=15&socketTimeout=660&tcpKeepAlive=true" +
+        "&stringtype=unspecified&gssEncMode=disable&sslmode=$ssl&ApplicationName=KnSQL"
+}
+
+/** DM 7 / DM 8. The optional database field is the default schema. */
+private fun damengUrl(host: String, port: Int, schema: String): String {
+    val query = if (schema.isBlank()) "" else "?schema=" + java.net.URLEncoder.encode(schema, "UTF-8")
+    return "jdbc:dm://$host:$port$query"
 }
 
 private fun oracleUrl(host: String, port: Int, database: String, sid: Boolean): String {
     return if (sid) "jdbc:oracle:thin:@$host:$port:$database" else "jdbc:oracle:thin:@//$host:$port/$database"
 }
 
-private fun sqlServerUrl(host: String, port: Int, database: String, encrypt: Boolean): String {
-    val microsoft = runCatching {
-        Class.forName("com.microsoft.sqlserver.jdbc.SQLServerDriver")
-        true
-    }.getOrDefault(false)
+/**
+ * SQL Server. A named instance (HOST\\SQLEXPRESS) is found through the SQL Browser service on UDP 1434;
+ * an explicit port wins over the instance name in mssql-jdbc, so the default 1433 is left out then.
+ */
+internal fun sqlServerUrl(
+    host: String,
+    port: Int,
+    instance: String,
+    database: String,
+    encrypt: Boolean,
+    trustServerCertificate: Boolean,
+    microsoft: Boolean = microsoftSqlServerDriver(),
+): String {
+    val named = instance.isNotBlank()
+    val usePort = !named || port != Engine.SqlServer.defaultPort
     if (microsoft) {
+        val address = buildString {
+            append(host)
+            if (named) append("\\").append(instance)
+            if (usePort) append(":").append(port)
+        }
         val db = if (database.isBlank()) "" else ";databaseName=$database"
         val secure = if (encrypt) "true" else "false"
-        return "jdbc:sqlserver://$host:$port$db;encrypt=$secure;trustServerCertificate=true;loginTimeout=8"
+        return "jdbc:sqlserver://$address$db;encrypt=$secure;trustServerCertificate=$trustServerCertificate;loginTimeout=8"
     }
     Class.forName("net.sourceforge.jtds.jdbc.Driver")
     val db = if (database.isBlank()) "" else "/$database"
-    return "jdbc:jtds:sqlserver://$host:$port$db;loginTimeout=8;socketKeepAlive=true"
+    val address = if (usePort) "$host:$port" else host
+    val named2 = if (named) ";instance=$instance" else ""
+    return "jdbc:jtds:sqlserver://$address$db$named2;loginTimeout=8;socketKeepAlive=true"
 }
+
+private fun microsoftSqlServerDriver(): Boolean = runCatching {
+    Class.forName("com.microsoft.sqlserver.jdbc.SQLServerDriver")
+    true
+}.getOrDefault(false)
 
 private fun Throwable.explain(): String = generateSequence(this) { it.cause }
     .take(5)
@@ -602,6 +831,9 @@ private fun registerDrivers() {
         "oracle.jdbc.OracleDriver",
         "com.microsoft.sqlserver.jdbc.SQLServerDriver",
         "net.sourceforge.jtds.jdbc.Driver",
+        "dm.jdbc.driver.DmDriver",
+        "org.postgresql.Driver",
+        "org.sqlite.JDBC",
     ).forEach { name -> runCatching { Class.forName(name) } }
 }
 
@@ -620,6 +852,13 @@ internal fun compactServerInfo(product: String?, version: String?): String {
     headline = headline.removeSuffix("- Production").trim()
     val full = if (name.isEmpty() || headline.startsWith(name, ignoreCase = true)) headline else "$name $headline"
     return listOfNotNull(full, patch).joinToString(" ")
+}
+
+/** Wrong credentials, a locked / expired account or an unknown service: another driver won't help. */
+private fun java.sql.SQLException.isOracleLoginError(): Boolean {
+    val text = generateSequence<Throwable>(this) { it.cause }.take(6).joinToString(" ") { it.message.orEmpty() }
+    return listOf("ORA-01017", "ORA-28000", "ORA-28001", "ORA-01045", "ORA-01031", "ORA-12514", "ORA-12505", "ORA-12154")
+        .any { it in text }
 }
 
 /** The server could not be reached at all, as opposed to a login or SQL error. */

@@ -35,12 +35,20 @@ private fun Connection.rows(sql: String, vararg binds: String?): List<List<Strin
     }
 }
 
+/** Connection.getSchema() by reflection: Android's java.sql predates JDBC 4.1 and doesn't declare it. */
+internal fun sessionSchema(connection: Connection): String? = runCatching {
+    connection.javaClass.getMethod("getSchema").invoke(connection) as String?
+}.getOrNull()?.takeIf { it.isNotBlank() }
+
 private fun Connection.single(sql: String): String? = rows(sql).firstOrNull()?.firstOrNull()
 
 internal fun loadStructure(engine: Engine, connection: Connection, table: TableRef): TableStructure = when (engine) {
     Engine.Oracle -> oracleStructure(connection, table)
-    Engine.MySql -> mysqlStructure(connection, table)
+    Engine.MySql, Engine.MariaDb -> mysqlStructure(engine, connection, table)
     Engine.SqlServer -> sqlServerStructure(connection, table)
+    Engine.Dameng -> damengStructure(connection, table)
+    Engine.PostgreSql -> postgresStructure(connection, table)
+    Engine.Sqlite -> sqliteStructure(connection, table)
 }
 
 // ---------------------------------------------------------------- Oracle
@@ -72,10 +80,16 @@ private fun oracleStructure(connection: Connection, table: TableRef): TableStruc
         owner, name,
     ).mapNotNull { it[0] }.toSet()
     val columns = mutableListOf<ColumnInfo>()
+    // IDENTITY_COLUMN arrived in 12c; 11g has no identity columns at all.
+    val identityColumn = if (runCatching { connection.metaData.databaseMajorVersion }.getOrDefault(19) >= 12) {
+        "t.IDENTITY_COLUMN"
+    } else {
+        "'NO'"
+    }
     connection.prepareStatement(
         // DATA_DEFAULT is a LONG, which Oracle streams: it has to be read last and in column order.
         "SELECT t.COLUMN_NAME, t.DATA_TYPE, t.DATA_LENGTH, t.CHAR_LENGTH, t.CHAR_USED, t.DATA_PRECISION, " +
-            "t.DATA_SCALE, t.NULLABLE, c.COMMENTS, t.VIRTUAL_COLUMN, t.IDENTITY_COLUMN, t.DATA_DEFAULT " +
+            "t.DATA_SCALE, t.NULLABLE, c.COMMENTS, t.VIRTUAL_COLUMN, $identityColumn, t.DATA_DEFAULT " +
             "FROM ALL_TAB_COLS t LEFT JOIN ALL_COL_COMMENTS c " +
             "ON c.OWNER = t.OWNER AND c.TABLE_NAME = t.TABLE_NAME AND c.COLUMN_NAME = t.COLUMN_NAME " +
             "WHERE t.OWNER = ? AND t.TABLE_NAME = ? AND t.HIDDEN_COLUMN = 'NO' ORDER BY t.COLUMN_ID",
@@ -157,7 +171,7 @@ private fun mysqlDefault(raw: String?, kind: ValueKind, extra: String, nullable:
     }
 }
 
-private fun mysqlStructure(connection: Connection, table: TableRef): TableStructure {
+private fun mysqlStructure(engine: Engine, connection: Connection, table: TableRef): TableStructure {
     val database = table.catalog ?: table.schema ?: connection.single("SELECT DATABASE()")
         ?: throw SQLException(tr("没有选中数据库，无法确定表 {0} 在哪个库", table.name))
     val info = connection.rows(
@@ -187,7 +201,7 @@ private fun mysqlStructure(connection: Connection, table: TableRef): TableStruct
             generated = extra.contains("VIRTUAL GENERATED", true) || extra.contains("STORED GENERATED", true),
         )
     }
-    return TableStructure(Engine.MySql, TableRef(database, null, name), columns, info[1]?.takeIf { it.isNotBlank() })
+    return TableStructure(engine, TableRef(database, null, name), columns, info[1]?.takeIf { it.isNotBlank() })
 }
 
 // ---------------------------------------------------------------- SQL Server
@@ -263,6 +277,209 @@ private fun sqlServerStructure(connection: Connection, table: TableRef): TableSt
     return TableStructure(Engine.SqlServer, TableRef(database, schema, name), columns, comment)
 }
 
+// ---------------------------------------------------------------- Dameng
+
+private fun damengKind(type: String): ValueKind {
+    val t = type.uppercase().substringBefore('(').trim()
+    return when {
+        t in setOf("NUMBER", "NUMERIC", "DECIMAL", "DEC", "INT", "INTEGER", "BIGINT", "SMALLINT", "TINYINT", "BYTE",
+            "FLOAT", "DOUBLE", "DOUBLE PRECISION", "REAL", "PLS_INTEGER") -> ValueKind.Number
+        t == "DATE" -> ValueKind.Date
+        t == "TIME" || t.startsWith("TIME WITH") -> ValueKind.Time
+        t == "DATETIME" || t.startsWith("TIMESTAMP") || t.startsWith("DATETIME WITH") -> ValueKind.DateTime
+        t == "BIT" || t == "BOOLEAN" || t == "BOOL" -> ValueKind.Boolean
+        t == "CLOB" || t == "TEXT" || t == "LONGVARCHAR" || t == "NCLOB" -> ValueKind.Lob
+        t == "BLOB" || t == "IMAGE" || t == "LONGVARBINARY" || t == "BINARY" || t == "VARBINARY" || t == "BFILE" -> ValueKind.Binary
+        else -> ValueKind.Text
+    }
+}
+
+private fun damengType(type: String, size: Int, scale: Int?): String {
+    val t = type.uppercase()
+    return when (t) {
+        "CHAR", "CHARACTER", "VARCHAR", "VARCHAR2", "NCHAR", "NVARCHAR", "NVARCHAR2", "BINARY", "VARBINARY", "RAW" ->
+            if (size > 0) "$t($size)" else t
+        "NUMBER", "NUMERIC", "DECIMAL", "DEC" -> when {
+            size <= 0 -> t
+            scale == null || scale == 0 -> "$t($size)"
+            else -> "$t($size,$scale)"
+        }
+        else -> t
+    }
+}
+
+/**
+ * DM tables through JDBC metadata, which the DM driver fills in fully (types, defaults, REMARKS,
+ * primary keys) and which doesn't depend on how closely a DM release mirrors Oracle's dictionary.
+ */
+private fun damengStructure(connection: Connection, table: TableRef): TableStructure {
+    val meta = connection.metaData
+    val wanted = table.schema
+        ?: runCatching { connection.single("SELECT SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') FROM DUAL") }.getOrNull()
+        ?: sessionSchema(connection)
+    var found: Pair<String, String>? = null
+    var comment: String? = null
+    for (schema in listOfNotNull(wanted, wanted?.uppercase()).distinct()) {
+        for (name in listOf(table.name, table.name.uppercase()).distinct()) {
+            meta.getTables(null, schema, name, arrayOf("TABLE")).use { set ->
+                if (found == null && set.next()) {
+                    found = (set.getString("TABLE_SCHEM") ?: schema) to (set.getString("TABLE_NAME") ?: name)
+                    comment = runCatching { set.getString("REMARKS") }.getOrNull()?.takeIf { it.isNotBlank() }
+                }
+            }
+        }
+    }
+    val (owner, name) = found ?: throw SQLException(tr("找不到表 {0}，或者没有权限修改它", table.name))
+    val keys = mutableSetOf<String>()
+    meta.getPrimaryKeys(null, owner, name).use { set ->
+        while (set.next()) set.getString("COLUMN_NAME")?.let(keys::add)
+    }
+    val columns = mutableListOf<ColumnInfo>()
+    meta.getColumns(null, owner, name, "%").use { set ->
+        while (set.next()) {
+            val column = set.getString("COLUMN_NAME") ?: continue
+            val typeName = set.getString("TYPE_NAME").orEmpty()
+            val size = set.getInt("COLUMN_SIZE")
+            val scale = set.getInt("DECIMAL_DIGITS").let { if (set.wasNull()) null else it }
+            val autoIncrement = runCatching { set.getString("IS_AUTOINCREMENT") }.getOrNull() == "YES"
+            val generated = runCatching { set.getString("IS_GENERATEDCOLUMN") }.getOrNull() == "YES"
+            columns += ColumnInfo(
+                name = column,
+                type = damengType(typeName, size, scale),
+                kind = damengKind(typeName),
+                nullable = set.getInt("NULLABLE") != java.sql.DatabaseMetaData.columnNoNulls,
+                defaultValue = runCatching { set.getString("COLUMN_DEF") }.getOrNull()?.trim()
+                    ?.takeIf { it.isNotEmpty() && !it.equals("NULL", true) && !autoIncrement },
+                comment = runCatching { set.getString("REMARKS") }.getOrNull()?.takeIf { it.isNotBlank() },
+                primaryKey = column in keys,
+                autoIncrement = autoIncrement,
+                generated = generated,
+            )
+        }
+    }
+    if (columns.none { it.comment != null }) {
+        val remarks = runCatching {
+            connection.rows(
+                "SELECT COLUMN_NAME, COMMENTS FROM ALL_COL_COMMENTS WHERE OWNER = ? AND TABLE_NAME = ? AND COMMENTS IS NOT NULL",
+                owner, name,
+            ).mapNotNull { row -> row[0]?.let { it to row[1] } }.toMap()
+        }.getOrDefault(emptyMap())
+        if (remarks.isNotEmpty()) columns.replaceAll { it.copy(comment = remarks[it.name]?.takeIf { c -> c.isNotBlank() }) }
+    }
+    if (comment == null) {
+        comment = runCatching {
+            connection.rows("SELECT COMMENTS FROM ALL_TAB_COMMENTS WHERE OWNER = ? AND TABLE_NAME = ?", owner, name)
+                .firstOrNull()?.firstOrNull()?.takeIf { it.isNotBlank() }
+        }.getOrNull()
+    }
+    return TableStructure(Engine.Dameng, TableRef(null, owner, name), columns, comment)
+}
+
+// ---------------------------------------------------------------- PostgreSQL
+
+internal fun postgresKind(typeName: String): ValueKind = when (typeName.lowercase()) {
+    "int2", "int4", "int8", "smallint", "integer", "bigint", "numeric", "decimal", "float4", "float8", "real",
+    "double precision", "oid" -> ValueKind.Number
+    "bool", "boolean" -> ValueKind.Boolean
+    "date" -> ValueKind.Date
+    "time", "timetz" -> ValueKind.Time
+    "timestamp", "timestamptz" -> ValueKind.DateTime
+    "text", "json", "jsonb", "xml" -> ValueKind.Lob
+    "bytea" -> ValueKind.Binary
+    else -> ValueKind.Text
+}
+
+private fun postgresStructure(connection: Connection, table: TableRef): TableStructure {
+    val schema = table.schema ?: connection.single("SELECT current_schema()")
+        ?: throw SQLException(tr("找不到表 {0}，或者没有权限修改它", table.name))
+    val info = connection.rows(
+        "SELECT c.oid::text, c.relname, obj_description(c.oid, 'pg_class') FROM pg_catalog.pg_class c " +
+            "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace " +
+            "WHERE n.nspname = ? AND c.relname = ? AND c.relkind IN ('r', 'p')",
+        schema, table.name,
+    ).firstOrNull() ?: throw SQLException(tr("找不到表 {0}，或者没有权限修改它", table.name))
+    val oid = info[0]!!
+    val keys = connection.rows(
+        "SELECT a.attname FROM pg_catalog.pg_index i JOIN pg_catalog.pg_attribute a " +
+            "ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = CAST(? AS oid) AND i.indisprimary",
+        oid,
+    ).mapNotNull { it[0] }.toSet()
+    fun columnsQuery(modern: Boolean) =
+        "SELECT a.attname, format_type(a.atttypid, a.atttypmod), t.typname, " +
+            "CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END, pg_get_expr(d.adbin, d.adrelid), " +
+            "col_description(a.attrelid, a.attnum), " +
+            (if (modern) "a.attidentity::text, a.attgenerated::text " else "'', '' ") +
+            "FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_type t ON t.oid = a.atttypid " +
+            "LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum " +
+            "WHERE a.attrelid = CAST(? AS oid) AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum"
+    // attidentity arrived in PostgreSQL 10, attgenerated in 12.
+    val rows = runCatching { connection.rows(columnsQuery(true), oid) }.getOrElse { connection.rows(columnsQuery(false), oid) }
+    val columns = rows.map { row ->
+        val default = row[4]?.trim()?.takeIf { it.isNotEmpty() }
+        val identity = !row[6].isNullOrBlank()
+        val generated = !row[7].isNullOrBlank()
+        val serial = default?.startsWith("nextval(", ignoreCase = true) == true
+        ColumnInfo(
+            name = row[0]!!,
+            type = row[1].orEmpty(),
+            kind = postgresKind(row[2].orEmpty()),
+            nullable = row[3] == "YES",
+            defaultValue = default?.takeUnless { serial || generated },
+            comment = row[5]?.takeIf { it.isNotBlank() },
+            primaryKey = row[0] in keys,
+            autoIncrement = identity || serial,
+            generated = generated,
+        )
+    }
+    return TableStructure(Engine.PostgreSql, TableRef(null, schema, info[1]!!), columns, info[2]?.takeIf { it.isNotBlank() })
+}
+
+// ---------------------------------------------------------------- SQLite
+
+/** SQLite type affinity (https://www.sqlite.org/datatype3.html), with dates kept as text. */
+internal fun sqliteKind(declared: String): ValueKind {
+    val t = declared.uppercase()
+    return when {
+        "INT" in t -> ValueKind.Number
+        "CHAR" in t || "CLOB" in t || "TEXT" in t -> ValueKind.Text
+        "BLOB" in t -> ValueKind.Binary
+        "BOOL" in t -> ValueKind.Boolean
+        "DATE" in t || "TIME" in t -> ValueKind.Text
+        "REAL" in t || "FLOA" in t || "DOUB" in t || "NUM" in t || "DEC" in t -> ValueKind.Number
+        else -> ValueKind.Text
+    }
+}
+
+private fun sqliteStructure(connection: Connection, table: TableRef): TableStructure {
+    val name = connection.rows(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? COLLATE NOCASE",
+        table.name,
+    ).firstOrNull()?.firstOrNull() ?: throw SQLException(tr("找不到表 {0}，或者没有权限修改它", table.name))
+    val quoted = quoteIdentifier(Engine.Sqlite, name)
+    // table_xinfo (3.26+) also lists generated columns: hidden = 2 or 3.
+    val rows = runCatching { connection.rows("PRAGMA table_xinfo($quoted)") }
+        .getOrElse { connection.rows("PRAGMA table_info($quoted)") }
+    val pkCount = rows.count { (it[5]?.toIntOrNull() ?: 0) > 0 }
+    val columns = rows.filter { (it.getOrNull(6)?.toIntOrNull() ?: 0) != 1 }.map { row ->
+        val type = row[2].orEmpty()
+        val pk = (row[5]?.toIntOrNull() ?: 0) > 0
+        val hidden = row.getOrNull(6)?.toIntOrNull() ?: 0
+        ColumnInfo(
+            name = row[1]!!,
+            type = type,
+            kind = sqliteKind(type),
+            nullable = row[3] != "1" && !pk,
+            defaultValue = row[4]?.takeIf { it.isNotBlank() },
+            comment = null,
+            primaryKey = pk,
+            // INTEGER PRIMARY KEY is an alias of the rowid and fills itself in.
+            autoIncrement = pk && pkCount == 1 && type.equals("INTEGER", true),
+            generated = hidden == 2 || hidden == 3,
+        )
+    }
+    return TableStructure(Engine.Sqlite, TableRef(null, null, name), columns, null)
+}
+
 // ---------------------------------------------------------------- rows for editing
 
 internal fun loadEditableRows(connection: Connection, structure: TableStructure, maxRows: Int): EditableData {
@@ -270,14 +487,25 @@ internal fun loadEditableRows(connection: Connection, structure: TableStructure,
     val table = qualifiedTable(engine, structure.table)
     val columns = structure.columns
     val list = columns.joinToString(", ") { "t." + quoteIdentifier(engine, it.name) }
-    val keyNames = if (engine == Engine.Oracle) listOf("ROWID") else structure.keyColumns
+    // SQLite tables without a primary key are still addressable through their rowid.
+    val sqliteRowId = engine == Engine.Sqlite && structure.keyColumns.isEmpty()
+    val keyNames = when {
+        engine == Engine.Oracle -> listOf("ROWID")
+        sqliteRowId -> listOf("rowid")
+        else -> structure.keyColumns
+    }
     val limit = maxRows > 0
     val sql = when (engine) {
-        Engine.Oracle -> "SELECT ROWIDTOCHAR(t.ROWID), $list FROM $table t" + if (limit) " FETCH FIRST ${maxRows + 1} ROWS ONLY" else ""
-        Engine.MySql -> "SELECT $list FROM $table t" + if (limit) " LIMIT ${maxRows + 1}" else ""
+        // ROWNUM works on every Oracle release; FETCH FIRST needs 12c.
+        Engine.Oracle -> "SELECT ROWIDTOCHAR(t.ROWID), $list FROM $table t" + if (limit) " WHERE ROWNUM <= ${maxRows + 1}" else ""
+        Engine.Sqlite -> "SELECT " + (if (sqliteRowId) "t.rowid, " else "") + "$list FROM $table t" +
+            if (limit) " LIMIT ${maxRows + 1}" else ""
+        Engine.MySql, Engine.MariaDb, Engine.Dameng, Engine.PostgreSql ->
+            "SELECT $list FROM $table t" + if (limit) " LIMIT ${maxRows + 1}" else ""
         Engine.SqlServer -> "SELECT " + (if (limit) "TOP (${maxRows + 1}) " else "") + "$list FROM $table t"
     }
-    val offset = if (engine == Engine.Oracle) 2 else 1
+    val rowIdFirst = engine == Engine.Oracle || sqliteRowId
+    val offset = if (rowIdFirst) 2 else 1
     val keyIndexes = keyNames.map { key -> columns.indexOfFirst { it.name == key } }
     val rows = mutableListOf<EditableRow>()
     var truncated = false
@@ -289,8 +517,8 @@ internal fun loadEditableRows(connection: Connection, structure: TableStructure,
                     truncated = true
                     break
                 }
-                val values = columns.indices.map { index -> readCell(set, index + offset, columns[index].kind) }
-                val key = if (engine == Engine.Oracle) listOf(set.getString(1)) else keyIndexes.map { values.getOrNull(it) }
+                val values = columns.indices.map { index -> readCell(engine, set, index + offset, columns[index].kind) }
+                val key = if (rowIdFirst) listOf(set.getString(1)) else keyIndexes.map { values.getOrNull(it) }
                 rows += EditableRow(key, values)
             }
         }
@@ -298,8 +526,21 @@ internal fun loadEditableRows(connection: Connection, structure: TableStructure,
     return EditableData(structure, keyNames, rows, truncated)
 }
 
-private fun readCell(set: ResultSet, index: Int, kind: ValueKind): String? = when (kind) {
-    ValueKind.Binary -> set.getBytes(index)?.let { "<binary ${it.size} bytes>" }
+private fun readCell(engine: Engine, set: ResultSet, index: Int, kind: ValueKind): String? = when {
+    kind == ValueKind.Binary -> set.getBytes(index)?.let { "<binary ${it.size} bytes>" }
+    // SQLite columns can hold any type whatever they were declared as, so they are read as text.
+    engine == Engine.Sqlite -> set.getString(index)
+    kind == ValueKind.Boolean && engine == Engine.PostgreSql -> set.getString(index)?.let {
+        when (it) {
+            "t" -> "true"
+            "f" -> "false"
+            else -> it
+        }
+    }
+    else -> readTyped(set, index, kind)
+}
+
+private fun readTyped(set: ResultSet, index: Int, kind: ValueKind): String? = when (kind) {
     ValueKind.DateTime -> set.getTimestamp(index)?.toString()?.removeSuffix(".0")
     ValueKind.Number -> set.getBigDecimal(index)?.toPlainString()
     else -> set.getString(index)

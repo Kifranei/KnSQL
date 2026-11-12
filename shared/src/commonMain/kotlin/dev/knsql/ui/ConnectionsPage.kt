@@ -49,7 +49,6 @@ fun ConnectionsPage(
     SmallTopAppBar(
         title = tr("连接"),
         color = barColor,
-        subtitle = "Oracle 19c · MySQL · SQL Server",
         defaultWindowInsetsPadding = true,
         actions = {
             IconButton(onClick = { onOverlay(ActiveOverlay.Editor(null)) }) {
@@ -100,8 +99,13 @@ fun ConnectionsPage(
                     visible.forEach { saved ->
                         ArrowPreference(
                             title = saved.name,
-                            summary = "${saved.engine.label}  ${saved.host}:${saved.port}" +
-                                if (saved.database.isBlank()) "" else "  / ${saved.database}",
+                            summary = if (saved.engine.fileBased) {
+                                "${saved.engine.label}  ${saved.database}"
+                            } else {
+                                "${saved.engine.label}  ${saved.host}" +
+                                    (if (saved.instance.isBlank()) "" else "\\${saved.instance}") + ":${saved.port}" +
+                                    if (saved.database.isBlank()) "" else "  / ${saved.database}"
+                            },
                             onClick = {
                                 workbench.connect(saved)
                                 onOpenWorkbench()
